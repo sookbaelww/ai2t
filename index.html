@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="출장경비">
+<title>출장경비 관리</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<!-- ==================== 로그인 ==================== -->
+<div id="login" class="login">
+  <div class="login-box">
+    <div class="login-logo"><span class="hdot"></span> 출장경비</div>
+    <p class="login-desc">회사에서 받은 <b>본인 암호</b>를 입력하세요.<br>한 번만 입력하면 계속 유지됩니다.</p>
+    <input id="pwInput" type="password" inputmode="text" autocomplete="current-password" placeholder="예) hong-4f2k9x">
+    <button class="btn" id="loginBtn">시작하기</button>
+    <div id="loginMsg" class="login-msg"></div>
+  </div>
+</div>
+
+<!-- ==================== 본 화면 ==================== -->
+<div id="app" hidden>
+
+<header>
+  <div class="hrow">
+    <div class="htitle"><span class="hdot"></span><span id="hTrip">출장경비 관리</span></div>
+    <div class="hlinks">
+      <button class="hlink" id="queueBtn" hidden></button>
+      <a class="hlink" id="sheetLink" href="#" target="_blank" rel="noopener">시트</a>
+      <a class="hlink" id="driveLink" href="#" target="_blank" rel="noopener">드라이브</a>
+    </div>
+  </div>
+  <div class="tabs">
+    <div class="tab on" data-page="input">입력</div>
+    <div class="tab" data-page="list">내역</div>
+    <div class="tab" data-page="status">현황</div>
+    <div class="tab" data-page="trip">출장</div>
+  </div>
+  <div id="netbar" class="netbar" hidden></div>
+</header>
+
+<main>
+
+<!-- -------- 입력 -------- -->
+<div class="page on" id="page-input">
+  <div id="editBanner"></div>
+  <div id="noTripWarn"></div>
+
+  <div class="card">
+    <h2>영수증 <span class="sub" id="ocrHint"></span></h2>
+    <div id="photoSlot"></div>
+    <input type="file" id="cameraFile" accept="image/*" capture="environment">
+    <input type="file" id="galleryFile" accept="image/*">
+    <div id="ocrResult"></div>
+  </div>
+
+  <div class="card">
+    <h2>지출 내용</h2>
+
+    <div class="field">
+      <label>항목</label>
+      <div class="chips" id="catChips"></div>
+    </div>
+
+    <div class="row2">
+      <div class="field">
+        <label>사용일자</label>
+        <input type="date" id="date">
+      </div>
+      <div class="field">
+        <label>프로젝트 / 현장</label>
+        <input id="project" list="projectList" placeholder="현장명">
+        <datalist id="projectList"></datalist>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>금액 (원)</label>
+      <input id="amount" class="amount-input" inputmode="numeric" placeholder="0">
+      <div class="chips" id="amountCands" style="margin-top:8px"></div>
+    </div>
+
+    <div class="field">
+      <label>세부내용 <span class="dimlbl">(상호 / 품목)</span></label>
+      <input id="detail" placeholder="예) 한우마을 · 중식">
+    </div>
+
+    <div class="row2">
+      <div class="field">
+        <label>인원수</label>
+        <input type="number" id="people" min="0" value="0">
+      </div>
+      <div class="field">
+        <label>1인당</label>
+        <input id="perHead" readonly value="-">
+      </div>
+    </div>
+
+    <div class="field">
+      <label>결제수단</label>
+      <select id="payment"></select>
+    </div>
+
+    <div class="field" id="payerBox" hidden>
+      <label>쓴 사람 <span class="warnlbl">· 환급 대상</span></label>
+      <div class="chips" id="payerChips"></div>
+    </div>
+
+    <div class="field">
+      <label>비고</label>
+      <textarea id="note" placeholder="필요 시 메모"></textarea>
+    </div>
+  </div>
+</div>
+
+<!-- -------- 내역 -------- -->
+<div class="page" id="page-list">
+  <div class="card">
+    <h2>지출 내역 <span class="sub">항목을 눌러 수정·삭제</span></h2>
+    <div class="field"><input id="search" placeholder="상호 · 항목 · 사람 검색"></div>
+    <div class="chips" id="filterChips"></div>
+  </div>
+  <div class="card"><div id="listBody"><div class="empty">불러오는 중…</div></div></div>
+</div>
+
+<!-- -------- 현황 -------- -->
+<div class="page" id="page-status">
+  <div class="card">
+    <h2>총 지출 <span class="sub" id="statTripName"></span></h2>
+    <div class="total" id="statTotal">₩0</div>
+    <div class="total-sub" id="statCount">0건</div>
+    <div id="gauge"></div>
+  </div>
+  <div class="card">
+    <h2>한도 대상 <span class="sub">숙박 · 식비 · 일비</span></h2>
+    <div id="limitBars"><div class="empty">-</div></div>
+  </div>
+  <div class="card">
+    <h2>기타 비용 <span class="sub">한도와 별개인 실비</span></h2>
+    <div id="otherBars"><div class="empty">-</div></div>
+  </div>
+  <div class="card">
+    <h2>환급 대상 <span class="sub">개인 선지출</span></h2>
+    <div id="refundList"><div class="empty">-</div></div>
+  </div>
+  <div class="card">
+    <h2>결제수단별 <span class="sub">카드 명세서 대사용</span></h2>
+    <div id="paymentList"><div class="empty">-</div></div>
+  </div>
+  <div class="card">
+    <h2>프로젝트별</h2>
+    <div id="projectList2"><div class="empty">-</div></div>
+  </div>
+</div>
+
+<!-- -------- 출장 -------- -->
+<div class="page" id="page-trip">
+  <div class="card">
+    <h2>출장 선택</h2>
+    <select id="tripSelect"></select>
+    <div class="hint">아래를 고치면 <b>선택한 출장이 수정</b>됩니다.
+      새로 만들려면 <b>+ 새 출장</b>을 고르세요.</div>
+  </div>
+
+  <div class="card">
+    <h2>출장 정보</h2>
+    <div class="field">
+      <label>구분</label>
+      <div class="chips" id="kindChips"></div>
+    </div>
+    <div class="field">
+      <label>출장명 <span class="dimlbl">(정산 단위 · 영수증 폴더명)</span></label>
+      <input id="tName" placeholder="예) 2026-09 김해 교량 정밀점검">
+    </div>
+    <div class="field">
+      <label>프로젝트 / 현장</label>
+      <input id="tProject" list="projectList" placeholder="예) 김해대교 정밀안전진단">
+    </div>
+    <div class="row2">
+      <div class="field"><label>시작일</label><input type="date" id="tStart"></div>
+      <div class="field"><label>종료일</label><input type="date" id="tEnd"></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>일수</label><input type="number" id="tDays" min="0" value="0"></div>
+      <div class="field"><label>박수</label><input type="number" id="tNights" min="0" value="0"></div>
+    </div>
+    <div class="field">
+      <label>참석자 <span class="dimlbl">(직급에 따라 숙박 한도가 달라집니다)</span></label>
+      <div class="chips" id="tMembers"></div>
+    </div>
+    <div class="field">
+      <label>메모</label>
+      <input id="tMemo" placeholder="선택 입력">
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>한도 자동 계산</h2>
+    <div id="limitCalc" class="calc"></div>
+    <button class="btn" id="tripSaveBtn" style="margin-top:13px;width:100%">출장 저장</button>
+  </div>
+
+  <div class="card">
+    <h2>회사 제출 서류 <span class="sub">엑셀</span></h2>
+    <div class="row2">
+      <button class="btn ghost wide" id="planBtn">출장계획서</button>
+      <button class="btn ghost wide" id="reportBtn">복명서</button>
+    </div>
+    <div class="hint">만든 파일은 드라이브의 해당 출장 폴더에도 저장됩니다.</div>
+    <div id="docResult"></div>
+  </div>
+</div>
+
+</main>
+
+<div class="savebar" id="savebar">
+  <button class="btn ghost" id="resetBtn">비우기</button>
+  <button class="btn danger" id="deleteBtn" hidden>삭제</button>
+  <button class="btn" id="saveBtn">저장</button>
+</div>
+
+</div><!-- /#app -->
+
+<div id="toast"></div>
+<div id="sheetModal" class="modal" hidden></div>
+
+<script src="./config.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

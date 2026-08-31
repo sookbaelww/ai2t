@@ -1,0 +1,1146 @@
+/* =====================================================================
+ * 출장경비 관리 — PWA
+ *   · Apps Script를 JSON API로 호출한다 (fetch)
+ *   · 오프라인이면 IndexedDB 대기열에 쌓고 온라인 복귀 시 자동 전송
+ * ===================================================================== */
+
+'use strict';
+
+/* ---------------------------------------------------------------
+ * 상태
+ * --------------------------------------------------------------- */
+var BOOT = { people:[], projects:[], categories:[], limitCats:{}, payments:[], payType:{},
+             settings:{}, grades:['이사','차장','차장이하'], trips:[],
+             sheetUrl:'#', driveUrl:'#', ocrAvailable:false };
+var DASH = null;
+var PW = '';
+var ME = '';
+var curTripId = '';
+var editId = '';
+var selectedCategory = '';
+var selectedPayer = '';
+var photoArchive = null;     // 저장용(작게)
+var photoOcr = null;         // 인식용(크고 선명하게)
+var busy = false;
+var listFilter = '';
+var tKind = '출장', tMembers = [], tEditId = '';
+
+var $ = function(id){ return document.getElementById(id); };
+var won = function(n){ return '₩' + (Number(n)||0).toLocaleString('ko-KR'); };
+var digits = function(s){ return String(s).replace(/[^\d]/g,''); };
+var comma = function(n){ return Number(n).toLocaleString('ko-KR'); };
+var online = function(){ return navigator.onLine !== false; };
+
+/** 서버가 1건짜리 목록을 배열이 아닌 객체로 보내도 안전하게 배열로 만든다. */
+function arr(x){ return Array.isArray(x) ? x : (x == null ? [] : [x]); }
+
+function esc(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+function today(){
+  var t = new Date();
+  return t.getFullYear()+'-'+('0'+(t.getMonth()+1)).slice(-2)+'-'+('0'+t.getDate()).slice(-2);
+}
+function uuid(){
+  if (crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'x-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,10);
+}
+function toast(msg, kind){
+  var t = $('toast');
+  t.textContent = msg;
+  t.className = 'on ' + (kind||'');
+  clearTimeout(t._h);
+  t._h = setTimeout(function(){ t.className=''; }, 3200);
+}
+function rateColor(r){
+  if(r > 1) return 'var(--bad)';
+  if(r >= 0.9) return 'var(--orange)';
+  if(r >= 0.7) return 'var(--warn)';
+  return 'var(--ok)';
+}
+
+/* ---------------------------------------------------------------
+ * 통신
+ *
+ * Content-Type 을 text/plain 으로 보내 프리플라이트를 피한다.
+ * (Apps Script는 응답 헤더를 직접 설정할 수 없어 단순 요청이어야 한다)
+ * --------------------------------------------------------------- */
+function api(action, payload){
+  if(!window.API_URL || window.API_URL.indexOf('여기에') >= 0){
+    return Promise.reject(new Error('config.js 에 Apps Script 주소를 넣어주세요.'));
+  }
+  return fetch(window.API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ pw: PW, action: action, payload: payload || {} }),
+  }).then(function(res){
+    if(!res.ok) throw new Error('서버 응답 오류 (' + res.status + ')');
+    return res.json();
+  }).then(function(j){
+    if(!j.ok){
+      var e = new Error(j.error || '요청이 처리되지 않았습니다.');
+      e.authFailed = !!j.authFailed;
+      throw e;
+    }
+    ME = j.user || ME;
+    return j.data;
+  });
+}
+
+/* ---------------------------------------------------------------
+ * 오프라인 대기열 (IndexedDB)
+ * --------------------------------------------------------------- */
+var DB = null;
+function db(){
+  if(DB) return Promise.resolve(DB);
+  return new Promise(function(resolve, reject){
+    var rq = indexedDB.open('expense-queue', 1);
+    rq.onupgradeneeded = function(){
+      var d = rq.result;
+      if(!d.objectStoreNames.contains('queue')) d.createObjectStore('queue', { keyPath:'id' });
+    };
+    rq.onsuccess = function(){ DB = rq.result; resolve(DB); };
+    rq.onerror = function(){ reject(rq.error); };
+  });
+}
+function qPut(item){
+  return db().then(function(d){
+    return new Promise(function(res, rej){
+      var tx = d.transaction('queue','readwrite');
+      tx.objectStore('queue').put(item);
+      tx.oncomplete = res; tx.onerror = function(){ rej(tx.error); };
+    });
+  });
+}
+function qAll(){
+  return db().then(function(d){
+    return new Promise(function(res, rej){
+      var rq = d.transaction('queue','readonly').objectStore('queue').getAll();
+      rq.onsuccess = function(){ res(rq.result || []); };
+      rq.onerror = function(){ rej(rq.error); };
+    });
+  }).catch(function(){ return []; });
+}
+function qDel(id){
+  return db().then(function(d){
+    return new Promise(function(res, rej){
+      var tx = d.transaction('queue','readwrite');
+      tx.objectStore('queue').delete(id);
+      tx.oncomplete = res; tx.onerror = function(){ rej(tx.error); };
+    });
+  });
+}
+
+var flushing = false;
+/** 대기열을 서버로 보낸다. 같은 id는 서버가 덮어쓰므로 중복 저장되지 않는다. */
+function flushQueue(silent){
+  if(flushing || !online() || !PW) return Promise.resolve();
+  flushing = true;
+  return qAll().then(function(items){
+    if(!items.length) return null;
+    var okCount = 0;
+    var chain = Promise.resolve();
+    items.forEach(function(it){
+      chain = chain.then(function(){
+        return api('saveExpense', it.payload)
+          .then(function(){ okCount++; return qDel(it.id); })
+          .catch(function(e){
+            // 인증 실패나 네트워크 문제면 남겨두고 다음 기회에
+            it.lastError = e.message;
+            return qPut(it);
+          });
+      });
+    });
+    return chain.then(function(){
+      if(okCount && !silent) toast(okCount + '건을 전송했습니다', 'ok');
+      return okCount;
+    });
+  }).then(function(n){
+    flushing = false;
+    return refreshQueueBadge().then(function(){
+      if(n) return refresh();
+    });
+  }).catch(function(){ flushing = false; });
+}
+
+function refreshQueueBadge(){
+  return qAll().then(function(items){
+    var btn = $('queueBtn');
+    if(items.length){
+      btn.hidden = false;
+      btn.textContent = '대기 ' + items.length;
+      btn.className = 'hlink hot';
+    } else {
+      btn.hidden = true;
+    }
+    return items;
+  });
+}
+
+function showQueue(){
+  qAll().then(function(items){
+    var box = $('sheetModal');
+    box.hidden = false;
+    box.innerHTML = '<div class="modal-box">'
+      + '<h2 style="margin:0 0 12px;font-size:15px">전송 대기 중인 내역</h2>'
+      + (items.length ? items.map(function(it){
+          var p = it.payload;
+          return '<div class="kv"><span class="k">'+esc(p.date)+' · '+esc(p.category)
+            + ' · '+esc(p.detail||'')+(it.lastError?'<br><span style="color:var(--bad);font-size:11px">'+esc(it.lastError)+'</span>':'')
+            + '</span><span class="v">'+won(p.amount)+'</span></div>';
+        }).join('') : '<div class="empty">대기 중인 내역이 없습니다</div>')
+      + '<div class="row2" style="margin-top:14px">'
+      + '<button class="btn ghost wide" id="qClose">닫기</button>'
+      + '<button class="btn wide" id="qSend">지금 전송</button></div></div>';
+    $('qClose').onclick = function(){ box.hidden = true; };
+    $('qSend').onclick = function(){
+      if(!online()){ toast('인터넷 연결이 없습니다', 'err'); return; }
+      box.hidden = true;
+      toast('전송 중…');
+      flushQueue();
+    };
+  });
+}
+
+/* ---------------------------------------------------------------
+ * 사진 — 저장용과 인식용을 따로 만든다
+ * --------------------------------------------------------------- */
+
+/** 캔버스를 그레이스케일 + 자동 대비로 다듬는다 (OCR 가독성 향상) */
+function enhanceForOcr(ctx, w, h){
+  var img = ctx.getImageData(0, 0, w, h);
+  var d = img.data;
+  var hist = new Uint32Array(256);
+
+  for(var i = 0; i < d.length; i += 4){
+    var g = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114) | 0;
+    d[i] = d[i+1] = d[i+2] = g;
+    hist[g]++;
+  }
+  // 하위 2% ~ 상위 98% 지점을 검정/흰색으로 늘린다
+  var total = w * h, lo = 0, hi = 255, acc = 0;
+  for(var v = 0; v < 256; v++){ acc += hist[v]; if(acc > total*0.02){ lo = v; break; } }
+  acc = 0;
+  for(var v2 = 255; v2 >= 0; v2--){ acc += hist[v2]; if(acc > total*0.02){ hi = v2; break; } }
+  if(hi - lo < 32){ lo = 0; hi = 255; }            // 대비가 이미 낮으면 건드리지 않는다
+
+  var scale = 255 / (hi - lo);
+  var lut = new Uint8Array(256);
+  for(var k = 0; k < 256; k++){
+    var val = (k - lo) * scale;
+    lut[k] = val < 0 ? 0 : (val > 255 ? 255 : val | 0);
+  }
+  for(var j = 0; j < d.length; j += 4){
+    var nv = lut[d[j]];
+    d[j] = d[j+1] = d[j+2] = nv;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function drawTo(img, maxDim, quality, enhance){
+  var w = img.naturalWidth, h = img.naturalHeight;
+  var s = Math.min(1, maxDim / Math.max(w, h));
+  w = Math.max(1, Math.round(w*s)); h = Math.max(1, Math.round(h*s));
+  var c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  var ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  if(enhance) enhanceForOcr(ctx, w, h);
+  var url = c.toDataURL('image/jpeg', quality);
+  return { data: url.split(',')[1], mimeType:'image/jpeg', preview: url, w:w, h:h };
+}
+
+/** 저장용(1600px/72%)과 인식용(2400px/92% + 전처리) 두 장을 만든다. */
+function prepareImages(file){
+  return new Promise(function(resolve, reject){
+    var reader = new FileReader();
+    reader.onerror = function(){ reject(new Error('파일을 읽지 못했습니다')); };
+    reader.onload = function(e){
+      var img = new Image();
+      img.onerror = function(){ reject(new Error('이미지를 열지 못했습니다')); };
+      img.onload = function(){
+        try{
+          resolve({
+            archive: drawTo(img, 1600, 0.72, false),
+            ocr:     drawTo(img, 2400, 0.92, true),
+          });
+        }catch(err){ reject(err); }
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function photoButtonsHtml(cameraLabel){
+  return '<div class="photo-actions">'
+    + '<div class="photo-btn" data-pick="camera">'
+    +   '<span class="em">📷</span><span>' + esc(cameraLabel || '사진 촬영') + '</span></div>'
+    + '<div class="photo-btn" data-pick="gallery">'
+    +   '<span class="em">🖼️</span><span>갤러리에서 선택</span>'
+    +   '<span class="sm2">캡처 화면도 가능</span></div>'
+    + '</div>'
+    + '<div class="paste-hint">PC에서는 캡처 이미지를 <b>Ctrl+V</b> 로 붙여넣을 수 있습니다</div>';
+}
+function bindPhotoButtons(){
+  Array.prototype.forEach.call(
+    document.querySelectorAll('#photoSlot [data-pick]'), function(el){
+      el.onclick = function(){
+        var id = el.dataset.pick === 'camera' ? 'cameraFile' : 'galleryFile';
+        $(id).value = '';
+        $(id).click();
+      };
+    });
+}
+function renderPhotoButtons(label){
+  $('photoSlot').innerHTML = photoButtonsHtml(label);
+  bindPhotoButtons();
+}
+function showPhoto(pair){
+  if(!pair){
+    photoArchive = null; photoOcr = null;
+    renderPhotoButtons();
+    $('cameraFile').value = ''; $('galleryFile').value = '';
+    $('ocrResult').innerHTML = '';
+    return;
+  }
+  photoArchive = pair.archive;
+  photoOcr = pair.ocr;
+  $('photoSlot').innerHTML =
+    '<div class="photo-prev"><img src="'+pair.archive.preview+'" alt="영수증">'
+    + '<button class="photo-x" id="photoX">삭제</button></div>';
+  $('photoX').onclick = function(){ showPhoto(null); clearOcrMarks(); };
+}
+
+function handlePickedFile(f){
+  if(!f) return;
+  if(f.type && f.type.indexOf('image') !== 0){
+    toast('이미지 파일만 등록할 수 있습니다', 'err');
+    return;
+  }
+  clearOcrMarks();
+  prepareImages(f).then(function(pair){
+    showPhoto(pair);
+    if(!online()){
+      $('ocrResult').innerHTML =
+        '<div class="ocr-box bad">오프라인이라 자동 인식을 할 수 없습니다.<br>'
+        + '<span style="color:var(--faint)">아래에 직접 입력하시면 저장됩니다.</span></div>';
+      return;
+    }
+    if(BOOT.ocrAvailable) runOcr();
+  }).catch(function(err){ toast(err.message, 'err'); });
+}
+
+/* ---------------------------------------------------------------
+ * 인식
+ * --------------------------------------------------------------- */
+function markField(id, cls){
+  var el = $(id);
+  el.classList.remove('ocr-filled','ocr-unsure');
+  if(cls) el.classList.add(cls);
+}
+function clearOcrMarks(){
+  ['amount','date','detail'].forEach(function(id){ markField(id, ''); });
+  $('amountCands').innerHTML = '';
+  $('ocrResult').innerHTML = '';
+}
+
+/** 사람이 이미 값을 넣은 칸은 덮어쓰지 않는다. */
+function isBlank(id){ return !String($(id).value || '').trim(); }
+
+function runOcr(){
+  if(!photoOcr){ toast('먼저 사진을 등록하세요', 'err'); return; }
+  $('ocrResult').innerHTML =
+    '<div class="ocr-box"><span class="spin"></span> 영수증을 읽는 중… (5~15초)</div>';
+
+  api('recognize', {
+    photo: { data: photoOcr.data, mimeType: photoOcr.mimeType },
+    tripId: curTripId,
+  }).then(function(r){
+    var applied = [];
+
+    if(r.amount > 0 && isBlank('amount')){
+      $('amount').value = comma(r.amount);
+      markField('amount', r.amountConfident ? 'ocr-filled' : 'ocr-unsure');
+      applied.push(['금액', won(r.amount) + (r.amountConfident ? '' : '  (확인 필요)')]);
+      recalcPerHead();
+    }
+    renderAmountCands(r.amountCandidates || []);
+
+    if(r.date){
+      if(isBlank('date') || $('date').value === today()){
+        $('date').value = r.date;
+        markField('date', r.dateConfident ? 'ocr-filled' : 'ocr-unsure');
+      }
+      applied.push(['날짜', r.date + (r.dateConfident ? '' : '  (출장 기간 밖)')]);
+    }
+    if(r.store && isBlank('detail')){
+      $('detail').value = r.store;
+      markField('detail', 'ocr-filled');
+      applied.push(['상호', r.store]);
+    }
+    if(r.category && !selectedCategory){
+      selectedCategory = r.category;
+      renderCatChips();
+      applied.push(['항목', r.category + (r.categoryReason ? '  (' + r.categoryReason + ')' : '')]);
+    }
+    if(r.cardLast4){
+      applied.push(['카드', '****' + r.cardLast4]);
+      var hit = BOOT.payments.filter(function(p){ return p.indexOf(r.cardLast4) >= 0; });
+      if(hit.length === 1){ $('payment').value = hit[0]; syncPayerBox(); saveCtx(); }
+    }
+
+    if(!applied.length){
+      $('ocrResult').innerHTML =
+        '<div class="ocr-box bad">읽어낸 값이 없습니다. <b>직접 입력</b>해 주세요.<br>'
+        + '<span style="color:var(--faint)">밝은 곳에서 영수증이 화면에 꽉 차게, 수직으로 찍으면 잘 인식됩니다.</span>'
+        + '<div style="margin-top:9px"><button class="mini" id="ocrRetry">다시 인식</button></div></div>';
+    } else {
+      var unsure = (r.amount > 0 && !r.amountConfident) || (r.date && !r.dateConfident);
+      $('ocrResult').innerHTML =
+        '<div class="ocr-box ' + (unsure ? 'bad' : 'good') + '">'
+        + '<div style="color:var(--' + (unsure ? 'warn' : 'ok') + ');margin-bottom:5px">'
+        +   (unsure ? '△ 확인이 필요합니다 — 값을 확인하고 고치세요' : '✓ 인식 완료 — 값이 맞는지 확인하세요') + '</div>'
+        + applied.map(function(a){
+            return '<div class="ocr-line"><span>'+esc(a[0])+'</span><b>'+esc(a[1])+'</b></div>';
+          }).join('')
+        + '<div style="margin-top:9px"><button class="mini" id="ocrRetry">다시 인식</button></div></div>';
+    }
+    var rb = $('ocrRetry');
+    if(rb) rb.onclick = runOcr;
+  }).catch(function(e){
+    $('ocrResult').innerHTML =
+      '<div class="ocr-box bad">인식 실패: '+esc(e.message)+'<br>'
+      + '<span style="color:var(--faint)">아래에 직접 입력하시면 됩니다.</span>'
+      + '<div style="margin-top:9px"><button class="mini" id="ocrRetry">다시 시도</button></div></div>';
+    var rb2 = $('ocrRetry');
+    if(rb2) rb2.onclick = runOcr;
+  });
+}
+
+/** 금액 후보를 칩으로 보여준다. 탭 한 번으로 교체된다. */
+function renderAmountCands(list){
+  var box = $('amountCands');
+  var cur = Number(digits($('amount').value)) || 0;
+  var alt = list.filter(function(v){ return v !== cur; }).slice(0, 2);
+  if(!alt.length){ box.innerHTML = ''; return; }
+  box.innerHTML = '<span style="font-size:11px;color:var(--faint);align-self:center">다른 후보</span>'
+    + alt.map(function(v){ return '<div class="chip sm alt" data-v="'+v+'">'+won(v)+'</div>'; }).join('');
+  Array.prototype.forEach.call(box.querySelectorAll('[data-v]'), function(el){
+    el.onclick = function(){
+      $('amount').value = comma(Number(el.dataset.v));
+      markField('amount', 'ocr-filled');
+      recalcPerHead();
+      renderAmountCands(list);
+    };
+  });
+}
+
+/* ---------------------------------------------------------------
+ * 입력 화면
+ * --------------------------------------------------------------- */
+var LS = 'expense-pwa-v1';
+function saveCtx(){
+  try{
+    localStorage.setItem(LS, JSON.stringify({
+      tripId: curTripId, project: $('project').value, payment: $('payment').value
+    }));
+  }catch(e){}
+}
+function loadCtx(){
+  try{ return JSON.parse(localStorage.getItem(LS) || '{}'); }catch(e){ return {}; }
+}
+
+function renderCatChips(){
+  var el = $('catChips');
+  el.innerHTML = '';
+  BOOT.categories.forEach(function(c){
+    var d = document.createElement('div');
+    d.className = 'chip' + (c === selectedCategory ? ' on' : '');
+    d.innerHTML = esc(c) + (BOOT.limitCats[c] ? '<span class="g">한도</span>' : '');
+    d.onclick = function(){ selectedCategory = c; renderCatChips(); };
+    el.appendChild(d);
+  });
+}
+
+function renderPayerChips(){
+  var el = $('payerChips');
+  el.innerHTML = '';
+  var names = BOOT.people.map(function(p){ return p.name; });
+  if(selectedPayer && names.indexOf(selectedPayer) < 0) names.push(selectedPayer);
+  if(!names.length){
+    el.innerHTML = '<div class="dimlbl" style="font-size:13px">기준정보 시트에 인원을 등록하세요</div>';
+    return;
+  }
+  names.forEach(function(n){
+    var d = document.createElement('div');
+    d.className = 'chip sm' + (n === selectedPayer ? ' on' : '');
+    d.textContent = n;
+    d.onclick = function(){ selectedPayer = (selectedPayer === n) ? '' : n; renderPayerChips(); };
+    el.appendChild(d);
+  });
+}
+function syncPayerBox(){
+  var personal = BOOT.payType[$('payment').value] === '개인';
+  $('payerBox').hidden = !personal;
+  if(personal){
+    if(!selectedPayer && ME) selectedPayer = ME;    // 보통 본인이 썼다
+    renderPayerChips();
+  }
+}
+function recalcPerHead(){
+  var amt = Number(digits($('amount').value)) || 0;
+  var n = Number($('people').value) || 0;
+  $('perHead').value = (n > 0 && amt > 0) ? won(Math.round(amt/n)) : '-';
+}
+function renderNoTripWarn(){
+  $('noTripWarn').innerHTML = curTripId ? ''
+    : '<div class="warn-box">먼저 <b>출장</b> 탭에서 출장을 만들거나 선택하세요.</div>';
+}
+function renderEditBanner(){
+  $('editBanner').innerHTML = editId
+    ? '<div class="editbar"><span>✎ 기존 내역을 <b>수정 중</b>입니다</span>'
+      + '<button class="mini" id="cancelEdit">새로 입력</button></div>'
+    : '';
+  $('deleteBtn').hidden = !editId;
+  $('saveBtn').textContent = editId ? '수정 저장' : '저장';
+  if(editId) $('cancelEdit').onclick = function(){ clearEntry(true); };
+}
+
+function collect(){
+  return {
+    id: editId || uuid(),
+    upsert: true,
+    tripId: curTripId,
+    date: $('date').value,
+    project: $('project').value.trim(),
+    category: selectedCategory,
+    detail: $('detail').value.trim(),
+    amount: Number(digits($('amount').value)) || 0,
+    people: Number($('people').value) || 0,
+    members: '',
+    payment: $('payment').value,
+    payer: selectedPayer,
+    note: $('note').value.trim(),
+    receipt: window._editReceipt || '',
+    photo: photoArchive ? { data: photoArchive.data, mimeType: photoArchive.mimeType } : null
+  };
+}
+
+function saveExpense(){
+  if(busy) return;
+  var p = collect();
+  if(!p.tripId){ toast('출장을 먼저 선택하세요', 'err'); return; }
+  if(!p.date){ toast('사용일자를 입력하세요', 'err'); return; }
+  if(!p.category){ toast('항목을 선택하세요', 'err'); return; }
+  if(!p.amount){ toast('금액을 입력하세요', 'err'); return; }
+  if(BOOT.payType[p.payment] === '개인' && !p.payer){
+    toast('개인 결제는 "쓴 사람"을 선택하세요', 'err'); return;
+  }
+
+  // 오프라인이면 대기열에 넣고 끝낸다
+  if(!online()){
+    qPut({ id: p.id, at: Date.now(), payload: p }).then(function(){
+      toast('오프라인 — 대기열에 저장했습니다', 'ok');
+      clearEntry(true);
+      refreshQueueBadge();
+    }).catch(function(e){ toast('대기열 저장 실패: ' + e.message, 'err'); });
+    return;
+  }
+
+  busy = true;
+  var btn = $('saveBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> 저장 중…';
+
+  api('saveExpense', p).then(function(res){
+    toast((editId ? '수정 완료 · ' : '저장 완료 · ') + won(p.amount), 'ok');
+    clearEntry(true);
+    if(res && res.dashboard) applyDashboard(res.dashboard);
+  }).catch(function(e){
+    // 전송이 안 되면 잃지 않도록 대기열로
+    return qPut({ id: p.id, at: Date.now(), payload: p, lastError: e.message }).then(function(){
+      toast('전송 실패 — 대기열에 보관했습니다', 'err');
+      clearEntry(true);
+      refreshQueueBadge();
+    });
+  }).then(function(){
+    busy = false;
+    btn.disabled = false;
+    renderEditBanner();
+  });
+}
+
+function deleteExpense(){
+  if(!editId || busy) return;
+  if(!confirm('이 내역을 삭제할까요?\n삭제하면 되돌릴 수 없습니다.\n(영수증 사진은 드라이브에 남습니다)')) return;
+  if(!online()){ toast('삭제는 인터넷 연결이 필요합니다', 'err'); return; }
+
+  busy = true;
+  var btn = $('deleteBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>';
+
+  api('deleteExpense', { id: editId }).then(function(res){
+    toast('삭제했습니다', 'ok');
+    clearEntry(true);
+    if(res && res.dashboard) applyDashboard(res.dashboard);
+    gotoTab('list');
+  }).catch(function(e){
+    toast('삭제 실패: ' + e.message, 'err');
+  }).then(function(){
+    busy = false;
+    btn.disabled = false;
+    btn.textContent = '삭제';
+    renderEditBanner();
+  });
+}
+
+function clearEntry(resetEdit){
+  $('amount').value = '';
+  $('detail').value = '';
+  $('note').value = '';
+  $('people').value = 0;
+  $('perHead').value = '-';
+  showPhoto(null);
+  clearOcrMarks();
+  window._editReceipt = '';
+  if(resetEdit){ editId = ''; selectedPayer = ''; }
+  renderEditBanner();
+  syncPayerBox();
+}
+
+function startEdit(x){
+  editId = x.id;
+  curTripId = x.tripId || curTripId;
+  $('date').value = x.date || today();
+  $('project').value = x.project || '';
+  selectedCategory = x.category || '';
+  $('detail').value = x.detail || '';
+  $('amount').value = x.amount ? comma(x.amount) : '';
+  $('people').value = x.people || 0;
+  $('payment').value = x.payment || '';
+  selectedPayer = x.payer || '';
+  $('note').value = x.note || '';
+  window._editReceipt = x.receipt || '';
+  photoArchive = null; photoOcr = null;
+
+  renderPhotoButtons(x.receipt ? '사진 다시 촬영' : '사진 촬영');
+  $('ocrResult').innerHTML = x.receipt
+    ? '<div class="ocr-box"><a href="'+esc(x.receipt)+'" target="_blank" rel="noopener" style="color:var(--accent)">기존 영수증 보기</a></div>'
+    : '';
+  $('amountCands').innerHTML = '';
+
+  renderCatChips();
+  syncPayerBox();
+  recalcPerHead();
+  renderEditBanner();
+  gotoTab('input');
+  window.scrollTo(0, 0);
+}
+
+/* ---------------------------------------------------------------
+ * 내역
+ * --------------------------------------------------------------- */
+function renderFilterChips(){
+  var el = $('filterChips');
+  el.innerHTML = '';
+  ['전체'].concat(BOOT.categories).forEach(function(c){
+    var key = (c === '전체') ? '' : c;
+    var d = document.createElement('div');
+    d.className = 'chip sm' + (listFilter === key ? ' on' : '');
+    d.textContent = c;
+    d.onclick = function(){ listFilter = key; renderFilterChips(); renderList(); };
+    el.appendChild(d);
+  });
+}
+
+function renderList(){
+  var box = $('listBody');
+  var q = $('search').value.trim().toLowerCase();
+
+  qAll().then(function(pending){
+    var rows = (DASH ? DASH.recent : []).slice();
+    // 아직 전송 안 된 건도 함께 보여준다
+    var pendRows = pending
+      .filter(function(it){ return !curTripId || it.payload.tripId === curTripId; })
+      .map(function(it){
+        var p = it.payload;
+        return { id:p.id, tripId:p.tripId, date:p.date, project:p.project, category:p.category,
+                 detail:p.detail, amount:p.amount, people:p.people, payment:p.payment,
+                 payer:p.payer, refund:false, receipt:'', note:p.note, _pending:true };
+      });
+    rows = pendRows.concat(rows);
+
+    rows = rows.filter(function(r){
+      if(listFilter && r.category !== listFilter) return false;
+      if(!q) return true;
+      return [r.detail, r.category, r.project, r.payment, r.payer, r.date]
+        .join(' ').toLowerCase().indexOf(q) >= 0;
+    });
+
+    if(!rows.length){ box.innerHTML = '<div class="empty">해당하는 내역이 없습니다</div>'; return; }
+
+    box.innerHTML = rows.map(function(r, i){
+      return '<div class="item'+(r._pending?' pending':'')+'" data-i="'+i+'">'
+        + '<div class="ic">'+esc(r._pending ? '대기' : String(r.category||'').slice(0,4))+'</div>'
+        + '<div class="body">'
+        +   '<div class="t1">'+esc(r.detail || r.category || '(내용 없음)')+'</div>'
+        +   '<div class="t2">'+esc(r.date)+' · '+esc(r.project||'현장미지정')+' · '+esc(r.payment)
+        +     (r.people ? ' · '+r.people+'명' : '')
+        +     (r.receipt ? ' · 영수증' : '')
+        +     (r._pending ? ' · 전송 대기' : '')+'</div>'
+        + '</div>'
+        + '<div class="right"><div class="amt">'+won(r.amount)+'</div>'
+        +   (r.refund ? '<div class="tagr">환급 '+esc(r.payer||'')+'</div>' : '')+'</div>'
+        + '</div>';
+    }).join('');
+
+    Array.prototype.forEach.call(box.querySelectorAll('.item'), function(el){
+      el.onclick = function(){
+        var r = rows[Number(el.dataset.i)];
+        if(r._pending){ toast('전송된 뒤에 수정할 수 있습니다'); return; }
+        startEdit(r);
+      };
+    });
+  });
+}
+
+/* ---------------------------------------------------------------
+ * 현황
+ * --------------------------------------------------------------- */
+function bars(list, showCap){
+  var colors = ['#7c5cff','#33e0b0','#ff5c8a','#ffb84d','#5cc8ff','#c07cff','#ff8a5c','#8affc1'];
+  var max = list.reduce(function(m,t){ return Math.max(m, t.amount, t.refCap||0); }, 1);
+  return list.map(function(t, i){
+    var hasCap = showCap && t.refCap > 0;
+    var r = hasCap ? t.amount / t.refCap : 0;
+    var col = hasCap ? rateColor(r) : colors[i % colors.length];
+    var pct = hasCap ? Math.min(100, r*100) : Math.round(t.amount / max * 100);
+    return '<div class="bar-row">'
+      + '<div class="bar-head"><span class="n">'+esc(t.category || t.name)+'</span>'
+      +   '<span class="v">'+won(t.amount)
+      +     (hasCap ? ' <small>/ 산출 '+won(t.refCap)+'</small>' : '')+'</span></div>'
+      + '<div class="bar"><span style="width:'+pct+'%;background:'+col+'"></span></div>'
+      + (hasCap ? '<div class="bar-sub"><span>'+(r*100).toFixed(0)+'%</span>'
+          + '<span>'+(t.amount > t.refCap ? '산출액 초과' : '')+'</span></div>' : '')
+      + '</div>';
+  }).join('');
+}
+function kvList(list, emptyMsg){
+  if(!list.length) return '<div class="empty">'+emptyMsg+'</div>';
+  return list.map(function(x){
+    return '<div class="kv"><span class="k">'+esc(x.name)+'</span>'
+      + '<span class="v">'+won(x.amount)+'</span></div>';
+  }).join('');
+}
+
+function applyDashboard(d){
+  d.categories = arr(d.categories);
+  d.payments   = arr(d.payments);
+  d.refunds    = arr(d.refunds);
+  d.projects   = arr(d.projects);
+  d.recent     = arr(d.recent);
+  DASH = d;
+  if(d.sheetUrl) $('sheetLink').href = d.sheetUrl;
+  if(d.driveUrl) $('driveLink').href = d.driveUrl;
+  renderNoTripWarn();
+
+  var name = d.trip ? d.trip.name : '';
+  $('hTrip').textContent = name || '출장경비 관리';
+  $('statTripName').textContent = name ? '· ' + name : '· 전체';
+  $('statTotal').textContent = won(d.total);
+  $('statCount').textContent = d.count + '건';
+
+  if(d.hasLimit){
+    var col = rateColor(d.limitRate);
+    $('gauge').innerHTML =
+      '<div class="gauge">'
+      + '<div class="gauge-top"><span class="gauge-lbl">한도 '+won(d.limitTotal)+' 대비 '
+      +   '<span style="color:var(--faint)">(숙박+식비+일비)</span></span>'
+      +   '<span class="gauge-pct" style="color:'+col+'">'+(d.limitRate*100).toFixed(1)+'%</span></div>'
+      + '<div class="gauge-bar"><span style="width:'+Math.min(100,d.limitRate*100)+'%;background:'+col+'"></span></div>'
+      + '<div class="gauge-foot">'
+      +   '<span style="color:var(--faint)">사용 <b style="color:var(--text)">'+won(d.limitUsed)+'</b></span>'
+      +   (d.limitRemain >= 0
+            ? '<span style="color:var(--faint)">잔여 <b style="color:'+col+'">'+won(d.limitRemain)+'</b></span>'
+            : '<span style="color:var(--bad)">초과 <b>'+won(-d.limitRemain)+'</b></span>')
+      + '</div>'
+      + '<div class="hint">기타 비용 '+won(d.otherUsed)+' 은(는) 한도에 포함되지 않습니다.</div>'
+      + '</div>';
+  } else if(d.trip && d.trip.kind === '외근'){
+    $('gauge').innerHTML = '<div class="nobudget"><b>외근</b> · 한도 없이 기록만 합니다</div>';
+  } else if(d.trip){
+    $('gauge').innerHTML = '<div class="nobudget">한도가 0입니다<br>'
+      + '<span style="color:var(--accent)">출장 탭</span>에서 일수·박수·참석자를 입력하세요</div>';
+  } else {
+    $('gauge').innerHTML = '<div class="nobudget">출장을 선택하면 한도가 표시됩니다</div>';
+  }
+
+  var lim = d.categories.filter(function(c){ return c.limitTarget; });
+  var oth = d.categories.filter(function(c){ return !c.limitTarget; });
+  $('limitBars').innerHTML = lim.length
+    ? bars(lim, true)
+      + '<div class="hint">막대는 항목별 산출액 대비입니다. <b>실제 한도는 세 항목의 총액 기준</b>이라 '
+      + '한 항목이 넘어도 총액만 안 넘으면 됩니다.</div>'
+    : '<div class="empty">-</div>';
+  $('otherBars').innerHTML = oth.length ? bars(oth, false)
+    : '<div class="empty">기타 비용이 없습니다</div>';
+  $('refundList').innerHTML = kvList(d.refunds, '개인 선지출 내역이 없습니다');
+  $('paymentList').innerHTML = kvList(d.payments, '-');
+  $('projectList2').innerHTML = kvList(d.projects, '-');
+
+  renderList();
+}
+
+function refresh(){
+  if(!online()){ renderList(); return Promise.resolve(); }
+  return api('dashboard', { tripId: curTripId })
+    .then(applyDashboard)
+    .catch(function(e){ toast('불러오기 실패: ' + e.message, 'err'); });
+}
+
+/* ---------------------------------------------------------------
+ * 출장
+ * --------------------------------------------------------------- */
+function renderKindChips(){
+  var el = $('kindChips');
+  el.innerHTML = '';
+  ['출장','외근'].forEach(function(k){
+    var d = document.createElement('div');
+    d.className = 'chip' + (tKind === k ? ' on' : '');
+    d.textContent = k + (k==='외근' ? ' (한도 없음)' : ' (숙박)');
+    d.onclick = function(){ tKind = k; renderKindChips(); renderLimitCalc(); syncDocButtons(); };
+    el.appendChild(d);
+  });
+}
+function renderMemberChips(){
+  var el = $('tMembers');
+  el.innerHTML = '';
+  var all = BOOT.people.slice();
+  tMembers.forEach(function(n){
+    if(!all.some(function(p){ return p.name === n; })) all.push({ name:n, grade:'차장이하' });
+  });
+  if(!all.length){
+    el.innerHTML = '<div class="dimlbl" style="font-size:13px">기준정보 시트에 인원을 등록하세요</div>';
+    return;
+  }
+  all.forEach(function(p){
+    var on = tMembers.indexOf(p.name) >= 0;
+    var d = document.createElement('div');
+    d.className = 'chip sm' + (on ? ' on' : '');
+    d.innerHTML = esc(p.name) + '<span class="g">' + esc(p.grade) + '</span>';
+    d.onclick = function(){
+      var i = tMembers.indexOf(p.name);
+      if(i >= 0) tMembers.splice(i,1); else tMembers.push(p.name);
+      renderMemberChips(); renderLimitCalc();
+    };
+    el.appendChild(d);
+  });
+}
+function gradeOf(name){
+  var hit = BOOT.people.filter(function(p){ return p.name === name; });
+  return hit.length ? hit[0].grade : '차장이하';
+}
+function calcLimitsLocal(){
+  var s = BOOT.settings;
+  var days = Math.max(0, Number($('tDays').value) || 0);
+  var nights = Math.max(0, Number($('tNights').value) || 0);
+  if(tKind === '외근') return { lodging:0, meal:0, daily:0, total:0, perNight:0, days:days, nights:0 };
+  var rate = { '이사': s['숙박_이사'], '차장': s['숙박_차장'], '차장이하': s['숙박_차장이하'] };
+  var perNight = tMembers.reduce(function(sum, n){ return sum + (Number(rate[gradeOf(n)]) || 0); }, 0);
+  var lodging = perNight * nights;
+  var meal = (Number(s['식비_1일'])||0) * tMembers.length * days;
+  var daily = (Number(s['일비_1일'])||0) * tMembers.length * days;
+  return { lodging:lodging, meal:meal, daily:daily, total:lodging+meal+daily,
+           perNight:perNight, days:days, nights:nights };
+}
+function renderLimitCalc(){
+  var c = calcLimitsLocal();
+  if(tKind === '외근'){
+    $('limitCalc').innerHTML =
+      '<div class="calc-row"><span>외근은 한도를 비교하지 않고 <b>기록만</b> 합니다.</span></div>'
+      + '<div class="calc-row f">참고 규정 · 식비 1끼 '+won(BOOT.settings['외근_식비_1끼'])
+      + ' / 일비 '+won(BOOT.settings['외근_일비'])+'</div>';
+    return;
+  }
+  var n = tMembers.length;
+  $('limitCalc').innerHTML =
+      '<div class="calc-row"><span>숙박 <span class="f">'+won(c.perNight)+' × '+c.nights+'박</span></span>'
+    +   '<span>'+won(c.lodging)+'</span></div>'
+    + '<div class="calc-row"><span>식비 <span class="f">'+won(BOOT.settings['식비_1일'])+' × '+n+'명 × '+c.days+'일</span></span>'
+    +   '<span>'+won(c.meal)+'</span></div>'
+    + '<div class="calc-row"><span>일비 <span class="f">'+won(BOOT.settings['일비_1일'])+' × '+n+'명 × '+c.days+'일</span></span>'
+    +   '<span>'+won(c.daily)+'</span></div>'
+    + '<div class="calc-total"><span>총한도</span><span>'+won(c.total)+'</span></div>'
+    + (n ? '' : '<div class="calc-row f" style="color:var(--warn)">참석자를 선택하세요</div>');
+}
+function renderTripSelect(){
+  $('tripSelect').innerHTML = '<option value="">+ 새 출장 만들기</option>'
+    + BOOT.trips.map(function(t){
+        return '<option value="'+esc(t.id)+'"'+(t.id===tEditId?' selected':'')+'>'
+          + esc(t.name) + ' (' + esc(t.kind) + ')</option>';
+      }).join('');
+}
+function loadTripForm(id){
+  tEditId = id || '';
+  var t = BOOT.trips.filter(function(x){ return x.id === tEditId; })[0];
+  if(!t){
+    tKind = '출장'; tMembers = [];
+    ['tName','tProject','tStart','tEnd','tMemo'].forEach(function(k){ $(k).value = ''; });
+    $('tDays').value = 0; $('tNights').value = 0;
+  } else {
+    tKind = t.kind; tMembers = arr(t.members).slice();
+    $('tName').value = t.name; $('tProject').value = t.project || '';
+    $('tStart').value = t.start; $('tEnd').value = t.end;
+    $('tDays').value = t.days; $('tNights').value = t.nights; $('tMemo').value = t.memo;
+  }
+  renderKindChips(); renderMemberChips(); renderLimitCalc(); renderTripSelect(); syncDocButtons();
+  $('docResult').innerHTML = '';
+}
+function autoDays(){
+  var s = $('tStart').value, e = $('tEnd').value;
+  if(!s || !e) return;
+  var diff = Math.round((new Date(e) - new Date(s)) / 86400000);
+  if(isNaN(diff) || diff < 0) return;
+  $('tDays').value = diff + 1;
+  $('tNights').value = tKind === '외근' ? 0 : diff;
+  renderLimitCalc();
+}
+function saveTrip(){
+  if(busy) return;
+  var name = $('tName').value.trim();
+  if(!name){ toast('출장명을 입력하세요', 'err'); return; }
+  if(!online()){ toast('출장 저장은 인터넷 연결이 필요합니다', 'err'); return; }
+
+  busy = true;
+  var btn = $('tripSaveBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> 저장 중…';
+
+  api('saveTrip', {
+    id: tEditId, kind: tKind, name: name, project: $('tProject').value.trim(),
+    start: $('tStart').value, end: $('tEnd').value,
+    days: Number($('tDays').value)||0, nights: Number($('tNights').value)||0,
+    members: tMembers, memo: $('tMemo').value.trim()
+  }).then(function(res){
+    toast('출장 저장 완료', 'ok');
+    return api('bootstrap').then(function(b){
+      b.people = arr(b.people); b.projects = arr(b.projects);
+      b.categories = arr(b.categories); b.payments = arr(b.payments);
+      b.trips = arr(b.trips);
+      BOOT = b;
+      tEditId = res.trip.id;
+      curTripId = res.trip.id;
+      saveCtx();
+      renderTripSelect(); renderCatChips(); renderFilterChips(); syncDocButtons();
+      return refresh();
+    });
+  }).catch(function(e){
+    toast('저장 실패: ' + e.message, 'err');
+  }).then(function(){
+    busy = false;
+    btn.disabled = false;
+    btn.textContent = '출장 저장';
+  });
+}
+
+/* ---- 제출 서류 ---- */
+function syncDocButtons(){
+  $('planBtn').hidden = (tKind === '외근');
+  $('planBtn').disabled = !tEditId;
+  $('reportBtn').disabled = !tEditId;
+}
+function makeDoc(kind){
+  if(!tEditId){ toast('출장을 먼저 저장하세요', 'err'); return; }
+  if(!online()){ toast('서류 생성은 인터넷 연결이 필요합니다', 'err'); return; }
+
+  var btn = kind === 'tripPlan' ? $('planBtn') : $('reportBtn');
+  var label = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>';
+  $('docResult').innerHTML = '';
+
+  api(kind, { tripId: tEditId }).then(function(r){
+    $('docResult').innerHTML = '<div class="ok-box">✓ '+esc(r.name)+' 생성 완료<br>'
+      + '<a href="'+esc(r.url)+'" target="_blank" rel="noopener">파일 열기 / 내려받기</a></div>';
+    toast('서류를 만들었습니다', 'ok');
+  }).catch(function(e){
+    $('docResult').innerHTML = '<div class="warn-box">'+esc(e.message)+'</div>';
+  }).then(function(){
+    btn.disabled = false;
+    btn.textContent = label;
+    syncDocButtons();
+  });
+}
+
+/* ---------------------------------------------------------------
+ * 탭 / 네트워크 표시
+ * --------------------------------------------------------------- */
+function gotoTab(page){
+  document.querySelectorAll('.tab').forEach(function(x){
+    x.classList.toggle('on', x.dataset.page === page);
+  });
+  document.querySelectorAll('.page').forEach(function(x){
+    x.classList.toggle('on', x.id === 'page-' + page);
+  });
+  $('savebar').hidden = (page !== 'input');
+  if(page !== 'input') window.scrollTo(0, 0);
+  if(page === 'status' || page === 'list') refresh();
+  if(page === 'trip'){ if(!tEditId) loadTripForm(curTripId); renderLimitCalc(); }
+}
+
+function syncNetbar(){
+  var bar = $('netbar');
+  if(online()){ bar.hidden = true; }
+  else {
+    bar.hidden = false;
+    bar.textContent = '오프라인 — 입력은 저장되고 연결되면 자동 전송됩니다';
+  }
+}
+
+/* ---------------------------------------------------------------
+ * 로그인 / 시작
+ * --------------------------------------------------------------- */
+var PW_KEY = 'expense-pwa-pw';
+
+function doLogin(pw){
+  var msg = $('loginMsg');
+  msg.className = 'login-msg';
+  msg.innerHTML = '<span class="spin"></span> 확인 중…';
+  PW = pw;
+  return api('bootstrap').then(function(b){
+    try{ localStorage.setItem(PW_KEY, pw); }catch(e){}
+    b.people = arr(b.people); b.projects = arr(b.projects);
+    b.categories = arr(b.categories); b.payments = arr(b.payments);
+    b.trips = arr(b.trips);
+    BOOT = b;
+    $('login').hidden = true;
+    $('app').hidden = false;
+    start();
+  }).catch(function(e){
+    PW = '';
+    msg.className = 'login-msg err';
+    msg.textContent = e.message;
+    throw e;
+  });
+}
+
+function start(){
+  $('sheetLink').href = BOOT.sheetUrl || '#';
+  $('driveLink').href = BOOT.driveUrl || '#';
+  $('payment').innerHTML = BOOT.payments.map(function(p){
+    return '<option>' + esc(p) + '</option>';
+  }).join('');
+  $('projectList').innerHTML = BOOT.projects.map(function(p){
+    return '<option value="'+esc(p)+'">';
+  }).join('');
+  $('ocrHint').textContent = BOOT.ocrAvailable
+    ? '등록하면 자동으로 읽습니다' : '자동 인식 꺼짐 · 직접 입력';
+
+  var ctx = loadCtx();
+  if(ctx.project) $('project').value = ctx.project;
+  if(ctx.payment) $('payment').value = ctx.payment;
+  curTripId = ctx.tripId || (BOOT.trips.length ? BOOT.trips[0].id : '');
+
+  renderCatChips(); renderFilterChips(); renderKindChips(); renderMemberChips();
+  renderNoTripWarn(); renderEditBanner(); syncPayerBox();
+  loadTripForm(curTripId);
+  syncNetbar();
+  refreshQueueBadge().then(function(){ return flushQueue(true); });
+  refresh();
+}
+
+function init(){
+  $('date').value = today();
+  renderPhotoButtons();
+
+  document.querySelectorAll('.tab').forEach(function(tab){
+    tab.onclick = function(){ gotoTab(tab.dataset.page); };
+  });
+
+  ['cameraFile','galleryFile'].forEach(function(id){
+    $(id).onchange = function(e){ handlePickedFile(e.target.files && e.target.files[0]); };
+  });
+  document.addEventListener('paste', function(e){
+    if($('app').hidden) return;
+    if(!$('page-input').classList.contains('on')) return;
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    for(var i = 0; i < items.length; i++){
+      if(items[i].type && items[i].type.indexOf('image') === 0){
+        var f = items[i].getAsFile();
+        if(f){ e.preventDefault(); toast('캡처 이미지를 불러왔습니다'); handlePickedFile(f); }
+        return;
+      }
+    }
+  });
+
+  $('amount').oninput = function(){
+    var d = digits(this.value);
+    this.value = d ? comma(d) : '';
+    markField('amount', '');
+    recalcPerHead();
+  };
+  $('people').oninput = recalcPerHead;
+  $('date').onchange = function(){ markField('date', ''); };
+  $('detail').oninput = function(){ markField('detail', ''); };
+  $('project').onchange = saveCtx;
+  $('payment').onchange = function(){ syncPayerBox(); saveCtx(); };
+
+  $('saveBtn').onclick = saveExpense;
+  $('deleteBtn').onclick = deleteExpense;
+  $('resetBtn').onclick = function(){
+    clearEntry(true);
+    selectedCategory = '';
+    renderCatChips();
+    toast('입력란을 비웠습니다');
+  };
+  $('search').oninput = renderList;
+  $('queueBtn').onclick = showQueue;
+
+  $('tripSelect').onchange = function(){
+    loadTripForm(this.value);
+    if(this.value){ curTripId = this.value; saveCtx(); refresh(); }
+  };
+  $('tStart').onchange = autoDays;
+  $('tEnd').onchange = autoDays;
+  $('tDays').oninput = renderLimitCalc;
+  $('tNights').oninput = renderLimitCalc;
+  $('tripSaveBtn').onclick = saveTrip;
+  $('planBtn').onclick = function(){ makeDoc('tripPlan'); };
+  $('reportBtn').onclick = function(){ makeDoc('tripReport'); };
+
+  $('loginBtn').onclick = function(){
+    var v = $('pwInput').value.trim();
+    if(!v){ $('loginMsg').className='login-msg err'; $('loginMsg').textContent='암호를 입력하세요.'; return; }
+    doLogin(v).catch(function(){});
+  };
+  $('pwInput').onkeydown = function(e){ if(e.key === 'Enter') $('loginBtn').click(); };
+
+  window.addEventListener('online', function(){ syncNetbar(); flushQueue(); });
+  window.addEventListener('offline', syncNetbar);
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden && PW) flushQueue(true);
+  });
+
+  // 저장된 암호가 있으면 바로 들어간다
+  var saved = '';
+  try{ saved = localStorage.getItem(PW_KEY) || ''; }catch(e){}
+  if(saved){
+    $('pwInput').value = saved;
+    doLogin(saved).catch(function(e){
+      if(e && e.authFailed){ try{ localStorage.removeItem(PW_KEY); }catch(x){} }
+      $('pwInput').value = '';
+    });
+  }
+
+  if('serviceWorker' in navigator){
+    window.addEventListener('load', function(){
+      navigator.serviceWorker.register('./sw.js').catch(function(){});
+    });
+  }
+}
+
+init();
