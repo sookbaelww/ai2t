@@ -872,24 +872,32 @@ function calcLimitsLocal(){
   var s = BOOT.settings;
   var days = Math.max(0, Number($('tDays').value) || 0);
   var nights = Math.max(0, Number($('tNights').value) || 0);
-  if(tKind === '외근') return { lodging:0, meal:0, daily:0, total:0, perNight:0, days:days, nights:0, hasDeduct:false };
+  if(tKind === '외근') return { lodging:0, meal:0, daily:0, total:0, perNight:0, days:days, nights:0, hasDeduct:false, deductRows:[] };
   var rate = { '이사': s['숙박_이사'], '차장': s['숙박_차장'], '차장이하': s['숙박_차장이하'] };
   var mealRate = Number(s['식비_1일']) || 0;
   var dailyRate = Number(s['일비_1일']) || 0;
   var lodging = 0, meal = 0, daily = 0, perNight = 0, hasDeduct = false;
+  var deductRows = [];
   tMembers.forEach(function(n){
-    var r = Number(rate[gradeOf(n)]) || 0;
+    var grade = gradeOf(n);
+    var r = Number(rate[grade]) || 0;
     var cut = Math.max(0, Number(tDeduct[n]) || 0);
-    if(cut) hasDeduct = true;
     var effDays = Math.max(0, days - cut);
     var effNights = Math.max(0, nights - cut);
     perNight += r;
     lodging += r * effNights;
     meal += mealRate * effDays;
     daily += dailyRate * effDays;
+    if(cut){
+      hasDeduct = true;
+      var fullAmt = r * nights + (mealRate + dailyRate) * days;
+      var actAmt = r * effNights + (mealRate + dailyRate) * effDays;
+      deductRows.push({ name:n, grade:grade, cut:cut, effDays:effDays, effNights:effNights,
+                         delta: fullAmt - actAmt });
+    }
   });
   return { lodging:lodging, meal:meal, daily:daily, total:lodging+meal+daily,
-           perNight:perNight, days:days, nights:nights, hasDeduct:hasDeduct };
+           perNight:perNight, days:days, nights:nights, hasDeduct:hasDeduct, deductRows:deductRows };
 }
 function renderLimitCalc(){
   var c = calcLimitsLocal();
@@ -902,15 +910,21 @@ function renderLimitCalc(){
   }
   var n = tMembers.length;
   $('limitCalc').innerHTML =
-      '<div class="calc-row"><span>숙박 <span class="f">'+won(c.perNight)+' × '+c.nights+'박</span></span>'
+      '<div class="calc-row"><span>숙박 <span class="f">'+won(c.perNight)+' × '+c.nights+'박'+(c.hasDeduct?' (차감 적용)':'')+'</span></span>'
     +   '<span>'+won(c.lodging)+'</span></div>'
-    + '<div class="calc-row"><span>식비 <span class="f">'+won(BOOT.settings['식비_1일'])+' × '+n+'명 × '+c.days+'일</span></span>'
+    + '<div class="calc-row"><span>식비 <span class="f">'+won(BOOT.settings['식비_1일'])+' × '+n+'명 × '+c.days+'일'+(c.hasDeduct?' (차감 적용)':'')+'</span></span>'
     +   '<span>'+won(c.meal)+'</span></div>'
-    + '<div class="calc-row"><span>일비 <span class="f">'+won(BOOT.settings['일비_1일'])+' × '+n+'명 × '+c.days+'일</span></span>'
+    + '<div class="calc-row"><span>일비 <span class="f">'+won(BOOT.settings['일비_1일'])+' × '+n+'명 × '+c.days+'일'+(c.hasDeduct?' (차감 적용)':'')+'</span></span>'
     +   '<span>'+won(c.daily)+'</span></div>'
     + '<div class="calc-total"><span>총한도</span><span>'+won(c.total)+'</span></div>'
     + (n ? '' : '<div class="calc-row f" style="color:var(--warn)">참석자를 선택하세요</div>')
-    + (c.hasDeduct ? '<div class="calc-row f">일부 인원 조기복귀 차감이 반영된 금액입니다</div>' : '');
+    + (c.hasDeduct
+        ? '<div class="calc-deduct">' + c.deductRows.map(function(row){
+            return '<div class="calc-row f"><span>'+esc(row.name)+' ('+esc(row.grade)+') · '+row.cut+'일 조기복귀'
+              + ' → 숙박 '+row.effNights+'박·식비/일비 '+row.effDays+'일</span>'
+              + '<span>-'+won(row.delta)+'</span></div>';
+          }).join('') + '</div>'
+        : '');
 }
 function renderTripSelect(){
   $('tripSelect').innerHTML = '<option value="">+ 새 출장 만들기</option>'
