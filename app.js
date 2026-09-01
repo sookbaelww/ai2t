@@ -23,7 +23,7 @@ var photoArchive = null;     // 저장용(작게)
 var photoOcr = null;         // 인식용(크고 선명하게)
 var busy = false;
 var listFilter = '';
-var tKind = '출장', tMembers = [], tEditId = '';
+var tKind = '출장', tMembers = [], tDeduct = {}, tEditId = '';
 
 var $ = function(id){ return document.getElementById(id); };
 var won = function(n){ return '₩' + (Number(n)||0).toLocaleString('ko-KR'); };
@@ -557,6 +557,10 @@ function saveExpense(){
 
   api('saveExpense', p).then(function(res){
     toast((editId ? '수정 완료 · ' : '저장 완료 · ') + won(p.amount), 'ok');
+    if(p.project && BOOT.projects.indexOf(p.project) < 0){
+      BOOT.projects.push(p.project);
+      renderProjectList();
+    }
     clearEntry(true);
     if(res && res.dashboard) applyDashboard(res.dashboard);
   }).catch(function(e){
@@ -832,11 +836,31 @@ function renderMemberChips(){
     var d = document.createElement('div');
     d.className = 'chip sm' + (on ? ' on' : '');
     d.innerHTML = esc(p.name) + '<span class="g">' + esc(p.grade) + '</span>';
-    d.onclick = function(){
+    d.onclick = function(e){
+      if(e.target.closest('.chip-deduct')) return;
       var i = tMembers.indexOf(p.name);
-      if(i >= 0) tMembers.splice(i,1); else tMembers.push(p.name);
+      if(i >= 0){ tMembers.splice(i,1); delete tDeduct[p.name]; }
+      else tMembers.push(p.name);
       renderMemberChips(); renderLimitCalc();
     };
+    if(on && tKind !== '외근'){
+      var wrap = document.createElement('label');
+      wrap.className = 'chip-deduct';
+      wrap.title = '며칠 일찍 복귀';
+      var inp = document.createElement('input');
+      inp.type = 'number'; inp.min = '0'; inp.inputMode = 'numeric';
+      inp.value = tDeduct[p.name] || '';
+      inp.placeholder = '0';
+      inp.onclick = function(e){ e.stopPropagation(); };
+      inp.onchange = function(){
+        var v = Math.max(0, Number(inp.value) || 0);
+        if(v) tDeduct[p.name] = v; else delete tDeduct[p.name];
+        renderLimitCalc();
+      };
+      wrap.appendChild(inp);
+      wrap.appendChild(document.createTextNode('일 조기복귀'));
+      d.appendChild(wrap);
+    }
     el.appendChild(d);
   });
 }
@@ -848,14 +872,24 @@ function calcLimitsLocal(){
   var s = BOOT.settings;
   var days = Math.max(0, Number($('tDays').value) || 0);
   var nights = Math.max(0, Number($('tNights').value) || 0);
-  if(tKind === '외근') return { lodging:0, meal:0, daily:0, total:0, perNight:0, days:days, nights:0 };
+  if(tKind === '외근') return { lodging:0, meal:0, daily:0, total:0, perNight:0, days:days, nights:0, hasDeduct:false };
   var rate = { '이사': s['숙박_이사'], '차장': s['숙박_차장'], '차장이하': s['숙박_차장이하'] };
-  var perNight = tMembers.reduce(function(sum, n){ return sum + (Number(rate[gradeOf(n)]) || 0); }, 0);
-  var lodging = perNight * nights;
-  var meal = (Number(s['식비_1일'])||0) * tMembers.length * days;
-  var daily = (Number(s['일비_1일'])||0) * tMembers.length * days;
+  var mealRate = Number(s['식비_1일']) || 0;
+  var dailyRate = Number(s['일비_1일']) || 0;
+  var lodging = 0, meal = 0, daily = 0, perNight = 0, hasDeduct = false;
+  tMembers.forEach(function(n){
+    var r = Number(rate[gradeOf(n)]) || 0;
+    var cut = Math.max(0, Number(tDeduct[n]) || 0);
+    if(cut) hasDeduct = true;
+    var effDays = Math.max(0, days - cut);
+    var effNights = Math.max(0, nights - cut);
+    perNight += r;
+    lodging += r * effNights;
+    meal += mealRate * effDays;
+    daily += dailyRate * effDays;
+  });
   return { lodging:lodging, meal:meal, daily:daily, total:lodging+meal+daily,
-           perNight:perNight, days:days, nights:nights };
+           perNight:perNight, days:days, nights:nights, hasDeduct:hasDeduct };
 }
 function renderLimitCalc(){
   var c = calcLimitsLocal();
@@ -875,7 +909,8 @@ function renderLimitCalc(){
     + '<div class="calc-row"><span>일비 <span class="f">'+won(BOOT.settings['일비_1일'])+' × '+n+'명 × '+c.days+'일</span></span>'
     +   '<span>'+won(c.daily)+'</span></div>'
     + '<div class="calc-total"><span>총한도</span><span>'+won(c.total)+'</span></div>'
-    + (n ? '' : '<div class="calc-row f" style="color:var(--warn)">참석자를 선택하세요</div>');
+    + (n ? '' : '<div class="calc-row f" style="color:var(--warn)">참석자를 선택하세요</div>')
+    + (c.hasDeduct ? '<div class="calc-row f">일부 인원 조기복귀 차감이 반영된 금액입니다</div>' : '');
 }
 function renderTripSelect(){
   $('tripSelect').innerHTML = '<option value="">+ 새 출장 만들기</option>'
@@ -888,11 +923,12 @@ function loadTripForm(id){
   tEditId = id || '';
   var t = BOOT.trips.filter(function(x){ return x.id === tEditId; })[0];
   if(!t){
-    tKind = '출장'; tMembers = [];
+    tKind = '출장'; tMembers = []; tDeduct = {};
     ['tName','tProject','tStart','tEnd','tMemo'].forEach(function(k){ $(k).value = ''; });
     $('tDays').value = 0; $('tNights').value = 0;
   } else {
     tKind = t.kind; tMembers = arr(t.members).slice();
+    tDeduct = Object.assign({}, t.deduct || {});
     $('tName').value = t.name; $('tProject').value = t.project || '';
     $('tStart').value = t.start; $('tEnd').value = t.end;
     $('tDays').value = t.days; $('tNights').value = t.nights; $('tMemo').value = t.memo;
@@ -924,7 +960,7 @@ function saveTrip(){
     id: tEditId, kind: tKind, name: name, project: $('tProject').value.trim(),
     start: $('tStart').value, end: $('tEnd').value,
     days: Number($('tDays').value)||0, nights: Number($('tNights').value)||0,
-    members: tMembers, memo: $('tMemo').value.trim()
+    members: tMembers, deduct: tDeduct, memo: $('tMemo').value.trim()
   }).then(function(res){
     toast('출장 저장 완료', 'ok');
     return api('bootstrap').then(function(b){
@@ -935,6 +971,7 @@ function saveTrip(){
       tEditId = res.trip.id;
       curTripId = res.trip.id;
       saveCtx();
+      renderProjectList();
       renderTripSelect(); renderCatChips(); renderFilterChips(); syncDocButtons();
       return refresh();
     });
@@ -1028,15 +1065,19 @@ function doLogin(pw){
   });
 }
 
+function renderProjectList(){
+  $('projectList').innerHTML = BOOT.projects.map(function(p){
+    return '<option value="'+esc(p)+'">';
+  }).join('');
+}
+
 function start(){
   $('sheetLink').href = BOOT.sheetUrl || '#';
   $('driveLink').href = BOOT.driveUrl || '#';
   $('payment').innerHTML = BOOT.payments.map(function(p){
     return '<option>' + esc(p) + '</option>';
   }).join('');
-  $('projectList').innerHTML = BOOT.projects.map(function(p){
-    return '<option value="'+esc(p)+'">';
-  }).join('');
+  renderProjectList();
   $('ocrHint').textContent = BOOT.ocrAvailable
     ? '등록하면 자동으로 읽습니다' : '자동 인식 꺼짐 · 직접 입력';
 

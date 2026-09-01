@@ -87,6 +87,13 @@ select{appearance:none;background-image:url("data:image/svg+xml;charset=utf-8,%3
 .chip .g{font-size:10px;color:var(--faint);margin-left:4px}
 .chip.on .g{color:#a795ff}
 .chip.alt{border-style:dashed;color:var(--faint)}
+.chip-deduct{display:flex;align-items:center;gap:5px;margin-top:5px;font-size:11px;
+  color:var(--faint);cursor:default}
+.chip-deduct input{width:34px;padding:3px 4px;border-radius:6px;border:1px solid var(--border);
+  background:var(--panel3);color:var(--text);font-size:12px;text-align:center;
+  -moz-appearance:textfield}
+.chip-deduct input::-webkit-outer-spin-button,
+.chip-deduct input::-webkit-inner-spin-button{margin:0}
 
 /* ---------- 사진 / OCR ---------- */
 .photo-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px}
