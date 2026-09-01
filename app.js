@@ -832,7 +832,7 @@ function renderTripProjectChips(){
     d.onclick = function(){
       var i = tProjects.indexOf(name);
       if(i >= 0) tProjects.splice(i,1); else tProjects.push(name);
-      renderTripProjectChips();
+      renderTripProjectChips(); renderTripNamePreview();
     };
     el.appendChild(d);
   });
@@ -852,9 +852,35 @@ function renderTripProjectChips(){
     inp.value = '';
     renderTripProjectChips();
     renderProjectList();
+    renderTripNamePreview();
   };
   add.appendChild(inp);
   el.appendChild(add);
+}
+/** 시작일·종료일(yyyy-mm-dd 문자열) → "yyyy-mm-dd~dd"(같은 달) 또는 "yyyy-mm-dd ~ yyyy-mm-dd" */
+function fmtTripRangeLocal(s, e){
+  if(!s) return '';
+  if(!e || e === s) return s;
+  var sameMonth = s.slice(0,7) === e.slice(0,7);
+  return sameMonth ? s + '~' + e.slice(8,10) : s + ' ~ ' + e;
+}
+/** 백엔드 disambiguateTripName_와 동일한 로직으로 미리보기용 출장명을 계산한다. */
+function calcTripNamePreview(){
+  var s = $('tStart').value, e = $('tEnd').value;
+  if(!s) return '';
+  var base = fmtTripRangeLocal(s, e);
+  var others = BOOT.trips.filter(function(t){ return t.id !== tEditId; }).map(function(t){ return t.name; });
+  if(others.indexOf(base) < 0) return base;
+  for(var i = 0; i < tProjects.length; i++){
+    var cand = base + ' (' + tProjects[i] + ')';
+    if(others.indexOf(cand) < 0) return cand;
+  }
+  var n = 2;
+  while(others.indexOf(base + '-' + n) >= 0) n++;
+  return base + '-' + n;
+}
+function renderTripNamePreview(){
+  $('tNamePreview').value = calcTripNamePreview();
 }
 function renderMemberChips(){
   var el = $('tMembers');
@@ -974,21 +1000,21 @@ function loadTripForm(id){
   var t = BOOT.trips.filter(function(x){ return x.id === tEditId; })[0];
   if(!t){
     tKind = '출장'; tMembers = []; tDeduct = {}; tProjects = [];
-    ['tName','tStart','tEnd','tMemo'].forEach(function(k){ $(k).value = ''; });
+    ['tStart','tEnd','tMemo'].forEach(function(k){ $(k).value = ''; });
     $('tDays').value = 0; $('tNights').value = 0;
   } else {
     tKind = t.kind; tMembers = arr(t.members).slice();
     tDeduct = Object.assign({}, t.deduct || {});
     tProjects = arr(t.projects).slice();
-    $('tName').value = t.name;
     $('tStart').value = t.start; $('tEnd').value = t.end;
     $('tDays').value = t.days; $('tNights').value = t.nights; $('tMemo').value = t.memo;
   }
-  renderKindChips(); renderMemberChips(); renderTripProjectChips(); renderLimitCalc(); renderTripSelect(); syncDocButtons();
+  renderKindChips(); renderMemberChips(); renderTripProjectChips(); renderTripNamePreview(); renderLimitCalc(); renderTripSelect(); syncDocButtons();
   $('docResult').innerHTML = '';
 }
 function autoDays(){
   var s = $('tStart').value, e = $('tEnd').value;
+  renderTripNamePreview();
   if(!s || !e) return;
   var diff = Math.round((new Date(e) - new Date(s)) / 86400000);
   if(isNaN(diff) || diff < 0) return;
@@ -998,8 +1024,7 @@ function autoDays(){
 }
 function saveTrip(){
   if(busy) return;
-  var name = $('tName').value.trim();
-  if(!name){ toast('출장명을 입력하세요', 'err'); return; }
+  if(!$('tStart').value){ toast('시작일을 입력하세요', 'err'); return; }
   if(!online()){ toast('출장 저장은 인터넷 연결이 필요합니다', 'err'); return; }
 
   busy = true;
@@ -1008,7 +1033,7 @@ function saveTrip(){
   btn.innerHTML = '<span class="spin"></span> 저장 중…';
 
   api('saveTrip', {
-    id: tEditId, kind: tKind, name: name, projects: tProjects,
+    id: tEditId, kind: tKind, projects: tProjects,
     start: $('tStart').value, end: $('tEnd').value,
     days: Number($('tDays').value)||0, nights: Number($('tNights').value)||0,
     members: tMembers, deduct: tDeduct, memo: $('tMemo').value.trim()
@@ -1024,6 +1049,7 @@ function saveTrip(){
       saveCtx();
       renderProjectList();
       renderTripProjectChips();
+      $('tNamePreview').value = res.trip.name;
       renderTripSelect(); renderCatChips(); renderFilterChips(); syncDocButtons();
       return refresh();
     });

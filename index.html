@@ -178,18 +178,17 @@
       <label>구분</label>
       <div class="chips" id="kindChips"></div>
     </div>
-    <div class="field">
-      <label>출장명 <span class="dimlbl">(정산 단위 · 영수증 폴더명)</span></label>
-      <input id="tName" placeholder="예) 2026-09-08~12 (김해 교량 정밀점검/국토교통부)">
-      <div class="hint">형식 · <b>yyyy-mm-dd ~ dd (용역명/발주처)</b> · 예: 2026-09-08~12 (김해 교량 정밀점검/국토교통부)</div>
+    <div class="row2">
+      <div class="field"><label>시작일</label><input type="date" id="tStart"></div>
+      <div class="field"><label>종료일</label><input type="date" id="tEnd"></div>
     </div>
     <div class="field">
       <label>프로젝트 / 발주처 <span class="dimlbl">(여러 개 선택 가능)</span></label>
       <div class="chips" id="tProjectChips"></div>
     </div>
-    <div class="row2">
-      <div class="field"><label>시작일</label><input type="date" id="tStart"></div>
-      <div class="field"><label>종료일</label><input type="date" id="tEnd"></div>
+    <div class="field">
+      <label>출장명 <span class="dimlbl">(자동 생성 · 정산 단위 · 영수증 폴더명)</span></label>
+      <input id="tNamePreview" readonly placeholder="시작일을 입력하면 자동으로 만들어집니다">
     </div>
     <div class="row2">
       <div class="field"><label>일수</label><input type="number" id="tDays" min="0" value="0"></div>
