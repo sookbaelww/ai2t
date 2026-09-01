@@ -23,7 +23,7 @@ var photoArchive = null;     // 저장용(작게)
 var photoOcr = null;         // 인식용(크고 선명하게)
 var busy = false;
 var listFilter = '';
-var tKind = '출장', tMembers = [], tDeduct = {}, tEditId = '';
+var tKind = '출장', tMembers = [], tDeduct = {}, tProjects = [], tEditId = '';
 
 var $ = function(id){ return document.getElementById(id); };
 var won = function(n){ return '₩' + (Number(n)||0).toLocaleString('ko-KR'); };
@@ -820,6 +820,41 @@ function renderKindChips(){
     el.appendChild(d);
   });
 }
+function renderTripProjectChips(){
+  var el = $('tProjectChips');
+  el.innerHTML = '';
+  BOOT.projects.forEach(function(name){
+    var on = tProjects.indexOf(name) >= 0;
+    var d = document.createElement('div');
+    d.className = 'chip sm' + (on ? ' on' : '');
+    d.textContent = name;
+    d.onclick = function(){
+      var i = tProjects.indexOf(name);
+      if(i >= 0) tProjects.splice(i,1); else tProjects.push(name);
+      renderTripProjectChips();
+    };
+    el.appendChild(d);
+  });
+  var add = document.createElement('div');
+  add.className = 'chip sm alt';
+  var inp = document.createElement('input');
+  inp.className = 'chip-inline-input';
+  inp.placeholder = '+ 새 발주처';
+  inp.onclick = function(e){ e.stopPropagation(); };
+  inp.onkeydown = function(e){
+    if(e.key !== 'Enter') return;
+    e.preventDefault();
+    var v = inp.value.trim();
+    if(!v) return;
+    if(BOOT.projects.indexOf(v) < 0) BOOT.projects.push(v);
+    if(tProjects.indexOf(v) < 0) tProjects.push(v);
+    inp.value = '';
+    renderTripProjectChips();
+    renderProjectList();
+  };
+  add.appendChild(inp);
+  el.appendChild(add);
+}
 function renderMemberChips(){
   var el = $('tMembers');
   el.innerHTML = '';
@@ -937,17 +972,18 @@ function loadTripForm(id){
   tEditId = id || '';
   var t = BOOT.trips.filter(function(x){ return x.id === tEditId; })[0];
   if(!t){
-    tKind = '출장'; tMembers = []; tDeduct = {};
-    ['tName','tProject','tStart','tEnd','tMemo'].forEach(function(k){ $(k).value = ''; });
+    tKind = '출장'; tMembers = []; tDeduct = {}; tProjects = [];
+    ['tName','tStart','tEnd','tMemo'].forEach(function(k){ $(k).value = ''; });
     $('tDays').value = 0; $('tNights').value = 0;
   } else {
     tKind = t.kind; tMembers = arr(t.members).slice();
     tDeduct = Object.assign({}, t.deduct || {});
-    $('tName').value = t.name; $('tProject').value = t.project || '';
+    tProjects = arr(t.projects).slice();
+    $('tName').value = t.name;
     $('tStart').value = t.start; $('tEnd').value = t.end;
     $('tDays').value = t.days; $('tNights').value = t.nights; $('tMemo').value = t.memo;
   }
-  renderKindChips(); renderMemberChips(); renderLimitCalc(); renderTripSelect(); syncDocButtons();
+  renderKindChips(); renderMemberChips(); renderTripProjectChips(); renderLimitCalc(); renderTripSelect(); syncDocButtons();
   $('docResult').innerHTML = '';
 }
 function autoDays(){
@@ -971,7 +1007,7 @@ function saveTrip(){
   btn.innerHTML = '<span class="spin"></span> 저장 중…';
 
   api('saveTrip', {
-    id: tEditId, kind: tKind, name: name, project: $('tProject').value.trim(),
+    id: tEditId, kind: tKind, name: name, projects: tProjects,
     start: $('tStart').value, end: $('tEnd').value,
     days: Number($('tDays').value)||0, nights: Number($('tNights').value)||0,
     members: tMembers, deduct: tDeduct, memo: $('tMemo').value.trim()
@@ -986,6 +1022,7 @@ function saveTrip(){
       curTripId = res.trip.id;
       saveCtx();
       renderProjectList();
+      renderTripProjectChips();
       renderTripSelect(); renderCatChips(); renderFilterChips(); syncDocButtons();
       return refresh();
     });

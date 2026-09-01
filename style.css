@@ -86,7 +86,10 @@ select{appearance:none;background-image:url("data:image/svg+xml;charset=utf-8,%3
 .chip.sm{padding:6px 11px;font-size:13px}
 .chip .g{font-size:10px;color:var(--faint);margin-left:4px}
 .chip.on .g{color:#a795ff}
-.chip.alt{border-style:dashed;color:var(--faint)}
+.chip.alt{border-style:dashed;color:var(--faint);cursor:text}
+.chip-inline-input{background:transparent;border:none;color:var(--text);font-size:13px;
+  width:82px;padding:0;outline:none;font-family:inherit}
+.chip-inline-input::placeholder{color:var(--faint)}
 .chip-deduct{display:flex;align-items:center;gap:5px;margin-top:5px;font-size:11px;
   color:var(--faint);cursor:default}
 .chip-deduct input{width:34px;padding:3px 4px;border-radius:6px;border:1px solid var(--border);
