@@ -14,6 +14,7 @@ var BOOT = { people:[], projects:[], categories:[], limitCats:{}, payments:[], p
              sheetUrl:'#', driveUrl:'#', ocrAvailable:false };
 var DASH = null;
 var PW = '';
+var NAME = '';
 var ME = '';
 var curTripId = '';
 var editId = '';
@@ -74,7 +75,7 @@ function api(action, payload){
   return fetch(window.API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ pw: PW, action: action, payload: payload || {} }),
+    body: JSON.stringify({ name: NAME, pw: PW, action: action, payload: payload || {} }),
   }).then(function(res){
     if(!res.ok) throw new Error('서버 응답 오류 (' + res.status + ')');
     return res.json();
@@ -1093,14 +1094,16 @@ function syncNetbar(){
  * 로그인 / 시작
  * --------------------------------------------------------------- */
 var PW_KEY = 'expense-pwa-pw';
+var NAME_KEY = 'expense-pwa-name';
 
-function doLogin(pw){
+function doLogin(name, pw){
   var msg = $('loginMsg');
   msg.className = 'login-msg';
   msg.innerHTML = '<span class="spin"></span> 확인 중…';
+  NAME = name;
   PW = pw;
   return api('bootstrap').then(function(b){
-    try{ localStorage.setItem(PW_KEY, pw); }catch(e){}
+    try{ localStorage.setItem(PW_KEY, pw); localStorage.setItem(NAME_KEY, name); }catch(e){}
     b.people = arr(b.people); b.projects = arr(b.projects);
     b.categories = arr(b.categories); b.payments = arr(b.payments);
     b.trips = arr(b.trips);
@@ -1109,7 +1112,7 @@ function doLogin(pw){
     $('app').hidden = false;
     start();
   }).catch(function(e){
-    PW = '';
+    NAME = ''; PW = '';
     msg.className = 'login-msg err';
     msg.textContent = e.message;
     throw e;
@@ -1205,10 +1208,13 @@ function init(){
   $('reportBtn').onclick = function(){ makeDoc('tripReport'); };
 
   $('loginBtn').onclick = function(){
+    var n = $('nameInput').value.trim();
     var v = $('pwInput').value.trim();
+    if(!n){ $('loginMsg').className='login-msg err'; $('loginMsg').textContent='이름을 입력하세요.'; return; }
     if(!v){ $('loginMsg').className='login-msg err'; $('loginMsg').textContent='암호를 입력하세요.'; return; }
-    doLogin(v).catch(function(){});
+    doLogin(n, v).catch(function(){});
   };
+  $('nameInput').onkeydown = function(e){ if(e.key === 'Enter') $('pwInput').focus(); };
   $('pwInput').onkeydown = function(e){ if(e.key === 'Enter') $('loginBtn').click(); };
 
   window.addEventListener('online', function(){ syncNetbar(); flushQueue(); });
@@ -1217,13 +1223,14 @@ function init(){
     if(!document.hidden && PW) flushQueue(true);
   });
 
-  // 저장된 암호가 있으면 바로 들어간다
-  var saved = '';
-  try{ saved = localStorage.getItem(PW_KEY) || ''; }catch(e){}
-  if(saved){
+  // 저장된 이름·암호가 있으면 바로 들어간다
+  var savedName = '', saved = '';
+  try{ savedName = localStorage.getItem(NAME_KEY) || ''; saved = localStorage.getItem(PW_KEY) || ''; }catch(e){}
+  if(savedName && saved){
+    $('nameInput').value = savedName;
     $('pwInput').value = saved;
-    doLogin(saved).catch(function(e){
-      if(e && e.authFailed){ try{ localStorage.removeItem(PW_KEY); }catch(x){} }
+    doLogin(savedName, saved).catch(function(e){
+      if(e && e.authFailed){ try{ localStorage.removeItem(PW_KEY); localStorage.removeItem(NAME_KEY); }catch(x){} }
       $('pwInput').value = '';
     });
   }
