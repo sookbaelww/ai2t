@@ -791,8 +791,8 @@ function applyDashboard(d){
       + '</div>'
       + '<div class="hint">기타 비용 '+won(d.otherUsed)+' 은(는) 한도에 포함되지 않습니다.</div>'
       + '</div>';
-  } else if(d.trip && d.trip.kind === '외근'){
-    $('gauge').innerHTML = '<div class="nobudget"><b>외근</b> · 한도 없이 기록만 합니다</div>';
+  } else if(d.trip && d.trip.kind !== '출장'){
+    $('gauge').innerHTML = '<div class="nobudget"><b>'+esc(d.trip.kind)+'</b> · 한도 없이 기록만 합니다</div>';
   } else if(d.trip){
     $('gauge').innerHTML = '<div class="nobudget">한도가 0입니다<br>'
       + '<span style="color:var(--accent)">출장 탭</span>에서 일수·박수·참석자를 입력하세요</div>';
@@ -829,11 +829,15 @@ function refresh(){
 function renderKindChips(){
   var el = $('kindChips');
   el.innerHTML = '';
-  ['출장','외근'].forEach(function(k){
+  ['출장','외근','사무실'].forEach(function(k){
     var d = document.createElement('div');
     d.className = 'chip' + (tKind === k ? ' on' : '');
-    d.textContent = k + (k==='외근' ? ' (한도 없음)' : ' (숙박)');
-    d.onclick = function(){ tKind = k; renderKindChips(); renderLimitCalc(); syncDocButtons(); };
+    d.textContent = k + (k==='출장' ? ' (숙박)' : ' (한도 없음)');
+    d.onclick = function(){
+      tKind = k;
+      if(tKind !== '출장') $('tNights').value = 0;
+      renderKindChips(); renderMemberChips(); renderLimitCalc(); syncDocButtons();
+    };
     el.appendChild(d);
   });
 }
@@ -921,7 +925,7 @@ function renderMemberChips(){
       else tMembers.push(p.name);
       renderMemberChips(); renderLimitCalc();
     };
-    if(on && tKind !== '외근'){
+    if(on && tKind === '출장'){
       var wrap = document.createElement('label');
       wrap.className = 'chip-deduct';
       wrap.title = '며칠 일찍 복귀';
@@ -950,7 +954,7 @@ function calcLimitsLocal(){
   var s = BOOT.settings;
   var days = Math.max(0, Number($('tDays').value) || 0);
   var nights = Math.max(0, Number($('tNights').value) || 0);
-  if(tKind === '외근') return { lodging:0, meal:0, daily:0, total:0, perNight:0, days:days, nights:0, hasDeduct:false, deductRows:[] };
+  if(tKind !== '출장') return { lodging:0, meal:0, daily:0, total:0, perNight:0, days:days, nights:0, hasDeduct:false, deductRows:[] };
   var rate = { '이사': s['숙박_이사'], '차장': s['숙박_차장'], '일반': s['숙박_일반'] };
   var mealRate = Number(s['식비_1일']) || 0;
   var dailyRate = Number(s['일비_1일']) || 0;
@@ -979,11 +983,13 @@ function calcLimitsLocal(){
 }
 function renderLimitCalc(){
   var c = calcLimitsLocal();
-  if(tKind === '외근'){
+  if(tKind !== '출장'){
     $('limitCalc').innerHTML =
-      '<div class="calc-row"><span>외근은 한도를 비교하지 않고 <b>기록만</b> 합니다.</span></div>'
-      + '<div class="calc-row f">참고 규정 · 식비 1끼 '+won(BOOT.settings['외근_식비_1끼'])
-      + ' / 일비 '+won(BOOT.settings['외근_일비'])+'</div>';
+      '<div class="calc-row"><span><b>'+esc(tKind)+'</b>은(는) 한도를 비교하지 않고 <b>기록만</b> 합니다.</span></div>'
+      + (tKind === '외근'
+          ? '<div class="calc-row f">참고 규정 · 식비 1끼 '+won(BOOT.settings['외근_식비_1끼'])
+            + ' / 일비 '+won(BOOT.settings['외근_일비'])+'</div>'
+          : '');
     return;
   }
   var n = tMembers.length;
@@ -1035,7 +1041,7 @@ function autoDays(){
   var diff = Math.round((new Date(e) - new Date(s)) / 86400000);
   if(isNaN(diff) || diff < 0) return;
   $('tDays').value = diff + 1;
-  $('tNights').value = tKind === '외근' ? 0 : diff;
+  $('tNights').value = tKind !== '출장' ? 0 : diff;
   renderLimitCalc();
 }
 function saveTrip(){
@@ -1080,7 +1086,7 @@ function saveTrip(){
 
 /* ---- 제출 서류 ---- */
 function syncDocButtons(){
-  $('planBtn').hidden = (tKind === '외근');
+  $('planBtn').hidden = (tKind !== '출장');
   $('planBtn').disabled = !tEditId;
   $('reportBtn').disabled = !tEditId;
 }
