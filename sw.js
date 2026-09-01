@@ -71,7 +71,7 @@ self.addEventListener('fetch', e => {
           caches.match(req).then(hit => { if (hit) done(hit); });
         }, NET_TIMEOUT);
 
-        fetch(req)
+        fetch(req, { cache: 'no-store' })
           .then(res => { clearTimeout(timer); done(putCache(req, res)); })
           .catch(() => {
             clearTimeout(timer);
