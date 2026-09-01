@@ -10,7 +10,7 @@
  * 상태
  * --------------------------------------------------------------- */
 var BOOT = { people:[], projects:[], categories:[], limitCats:{}, payments:[], payType:{},
-             settings:{}, grades:['이사','차장','차장이하'], trips:[],
+             settings:{}, grades:['이사','차장','일반'], trips:[],
              sheetUrl:'#', driveUrl:'#', ocrAvailable:false };
 var DASH = null;
 var PW = '';
@@ -825,7 +825,7 @@ function renderMemberChips(){
   el.innerHTML = '';
   var all = BOOT.people.slice();
   tMembers.forEach(function(n){
-    if(!all.some(function(p){ return p.name === n; })) all.push({ name:n, grade:'차장이하' });
+    if(!all.some(function(p){ return p.name === n; })) all.push({ name:n, grade:'일반' });
   });
   if(!all.length){
     el.innerHTML = '<div class="dimlbl" style="font-size:13px">기준정보 시트에 인원을 등록하세요</div>';
@@ -866,14 +866,14 @@ function renderMemberChips(){
 }
 function gradeOf(name){
   var hit = BOOT.people.filter(function(p){ return p.name === name; });
-  return hit.length ? hit[0].grade : '차장이하';
+  return hit.length ? hit[0].grade : '일반';
 }
 function calcLimitsLocal(){
   var s = BOOT.settings;
   var days = Math.max(0, Number($('tDays').value) || 0);
   var nights = Math.max(0, Number($('tNights').value) || 0);
   if(tKind === '외근') return { lodging:0, meal:0, daily:0, total:0, perNight:0, days:days, nights:0, hasDeduct:false, deductRows:[] };
-  var rate = { '이사': s['숙박_이사'], '차장': s['숙박_차장'], '차장이하': s['숙박_차장이하'] };
+  var rate = { '이사': s['숙박_이사'], '차장': s['숙박_차장'], '일반': s['숙박_일반'] };
   var mealRate = Number(s['식비_1일']) || 0;
   var dailyRate = Number(s['일비_1일']) || 0;
   var lodging = 0, meal = 0, daily = 0, perNight = 0, hasDeduct = false;
