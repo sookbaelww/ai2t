@@ -20,6 +20,7 @@ var curTripId = '';
 var editId = '';
 var selectedCategory = '';
 var selectedPayer = '';
+var selectedProject = '';
 var photoArchive = null;     // 저장용(작게)
 var photoOcr = null;         // 인식용(크고 선명하게)
 var busy = false;
@@ -446,7 +447,7 @@ var LS = 'expense-pwa-v1';
 function saveCtx(){
   try{
     localStorage.setItem(LS, JSON.stringify({
-      tripId: curTripId, project: $('project').value, payment: $('payment').value
+      tripId: curTripId, project: selectedProject, payment: $('payment').value
     }));
   }catch(e){}
 }
@@ -466,6 +467,24 @@ function renderCatChips(){
   });
 }
 
+function renderProjectChips(){
+  var el = $('projectChips');
+  el.innerHTML = '';
+  var trip = BOOT.trips.filter(function(t){ return t.id === curTripId; })[0];
+  var names = trip ? arr(trip.projects).slice() : [];
+  if(selectedProject && names.indexOf(selectedProject) < 0) names.push(selectedProject);
+  if(!names.length){
+    el.innerHTML = '<div class="dimlbl" style="font-size:13px">출장 탭에서 프로젝트/발주처를 먼저 등록하세요</div>';
+    return;
+  }
+  names.forEach(function(n){
+    var d = document.createElement('div');
+    d.className = 'chip sm' + (n === selectedProject ? ' on' : '');
+    d.textContent = n;
+    d.onclick = function(){ selectedProject = (selectedProject === n) ? '' : n; renderProjectChips(); saveCtx(); };
+    el.appendChild(d);
+  });
+}
 function renderPayerChips(){
   var el = $('payerChips');
   el.innerHTML = '';
@@ -516,7 +535,7 @@ function collect(){
     upsert: true,
     tripId: curTripId,
     date: $('date').value,
-    project: $('project').value.trim(),
+    project: selectedProject,
     category: selectedCategory,
     detail: $('detail').value.trim(),
     amount: Number(digits($('amount').value)) || 0,
@@ -558,10 +577,6 @@ function saveExpense(){
 
   api('saveExpense', p).then(function(res){
     toast((editId ? '수정 완료 · ' : '저장 완료 · ') + won(p.amount), 'ok');
-    if(p.project && BOOT.projects.indexOf(p.project) < 0){
-      BOOT.projects.push(p.project);
-      renderProjectList();
-    }
     clearEntry(true);
     if(res && res.dashboard) applyDashboard(res.dashboard);
   }).catch(function(e){
@@ -621,7 +636,7 @@ function startEdit(x){
   editId = x.id;
   curTripId = x.tripId || curTripId;
   $('date').value = x.date || today();
-  $('project').value = x.project || '';
+  selectedProject = x.project || '';
   selectedCategory = x.category || '';
   $('detail').value = x.detail || '';
   $('amount').value = x.amount ? comma(x.amount) : '';
@@ -639,6 +654,7 @@ function startEdit(x){
   $('amountCands').innerHTML = '';
 
   renderCatChips();
+  renderProjectChips();
   syncPayerBox();
   recalcPerHead();
   renderEditBanner();
@@ -851,7 +867,7 @@ function renderTripProjectChips(){
     if(tProjects.indexOf(v) < 0) tProjects.push(v);
     inp.value = '';
     renderTripProjectChips();
-    renderProjectList();
+    renderProjectChips();
     renderTripNamePreview();
   };
   add.appendChild(inp);
@@ -1047,7 +1063,7 @@ function saveTrip(){
       tEditId = res.trip.id;
       curTripId = res.trip.id;
       saveCtx();
-      renderProjectList();
+      renderProjectChips();
       renderTripProjectChips();
       $('tNamePreview').value = res.trip.name;
       renderTripSelect(); renderCatChips(); renderFilterChips(); syncDocButtons();
@@ -1145,28 +1161,21 @@ function doLogin(name, pw){
   });
 }
 
-function renderProjectList(){
-  $('projectList').innerHTML = BOOT.projects.map(function(p){
-    return '<option value="'+esc(p)+'">';
-  }).join('');
-}
-
 function start(){
   $('sheetLink').href = BOOT.sheetUrl || '#';
   $('driveLink').href = BOOT.driveUrl || '#';
   $('payment').innerHTML = BOOT.payments.map(function(p){
     return '<option>' + esc(p) + '</option>';
   }).join('');
-  renderProjectList();
   $('ocrHint').textContent = BOOT.ocrAvailable
     ? '등록하면 자동으로 읽습니다' : '자동 인식 꺼짐 · 직접 입력';
 
   var ctx = loadCtx();
-  if(ctx.project) $('project').value = ctx.project;
+  selectedProject = ctx.project || '';
   if(ctx.payment) $('payment').value = ctx.payment;
   curTripId = ctx.tripId || (BOOT.trips.length ? BOOT.trips[0].id : '');
 
-  renderCatChips(); renderFilterChips(); renderKindChips(); renderMemberChips();
+  renderCatChips(); renderProjectChips(); renderFilterChips(); renderKindChips(); renderMemberChips();
   renderNoTripWarn(); renderEditBanner(); syncPayerBox();
   loadTripForm(curTripId);
   syncNetbar();
@@ -1207,7 +1216,6 @@ function init(){
   $('people').oninput = recalcPerHead;
   $('date').onchange = function(){ markField('date', ''); };
   $('detail').oninput = function(){ markField('detail', ''); };
-  $('project').onchange = saveCtx;
   $('payment').onchange = function(){ syncPayerBox(); saveCtx(); };
 
   $('saveBtn').onclick = saveExpense;
@@ -1223,7 +1231,7 @@ function init(){
 
   $('tripSelect').onchange = function(){
     loadTripForm(this.value);
-    if(this.value){ curTripId = this.value; saveCtx(); refresh(); }
+    if(this.value){ curTripId = this.value; saveCtx(); renderProjectChips(); refresh(); }
   };
   $('tStart').onchange = autoDays;
   $('tEnd').onchange = autoDays;
