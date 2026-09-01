@@ -5,7 +5,7 @@
  *  받은 주소(.../exec 로 끝나는 것)를 아래 따옴표 안에 붙여넣으세요.
  * ===================================================================== */
 
-window.API_URL = 'https://script.google.com/macros/s/AKfycbxYnkejIW3G-LNffVxNtyhUhfhCbaXu1v12m-uin0nhfvxrHk6ixEZ0_VzIxKUDFacZmw/exec';
+window.API_URL = 'https://script.google.com/macros/s/AKfycbwu8-KUakSiOJWrbfYDEsHmLXAMq2ouT2wjeOgGEYdFb5-0x-w44yc3xjMEtrQva9pC/exec';
 
 /* 앱 이름을 바꾸고 싶으면 여기도 고치세요 (홈 화면 아이콘 이름은 manifest에서) */
 window.APP_NAME = '출장경비';
