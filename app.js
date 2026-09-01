@@ -692,7 +692,7 @@ function renderList(){
         + '<div class="ic">'+esc(r._pending ? '대기' : String(r.category||'').slice(0,4))+'</div>'
         + '<div class="body">'
         +   '<div class="t1">'+esc(r.detail || r.category || '(내용 없음)')+'</div>'
-        +   '<div class="t2">'+esc(r.date)+' · '+esc(r.project||'현장미지정')+' · '+esc(r.payment)
+        +   '<div class="t2">'+esc(r.date)+' · '+esc(r.project||'발주처미지정')+' · '+esc(r.payment)
         +     (r.people ? ' · '+r.people+'명' : '')
         +     (r.receipt ? ' · 영수증' : '')
         +     (r._pending ? ' · 전송 대기' : '')+'</div>'
