@@ -826,6 +826,12 @@ function refresh(){
 /* ---------------------------------------------------------------
  * 출장
  * --------------------------------------------------------------- */
+/** 사무실이면 시작일/종료일 대신 "해당 월" 칸을 보여준다. */
+function syncTripDateMode(){
+  var isOffice = tKind === '사무실';
+  $('tDateRange').hidden = isOffice;
+  $('tMonthField').hidden = !isOffice;
+}
 function renderKindChips(){
   var el = $('kindChips');
   el.innerHTML = '';
@@ -836,7 +842,8 @@ function renderKindChips(){
     d.onclick = function(){
       tKind = k;
       if(tKind !== '출장') $('tNights').value = 0;
-      renderKindChips(); renderMemberChips(); renderLimitCalc(); syncDocButtons();
+      syncTripDateMode();
+      renderKindChips(); renderMemberChips(); renderLimitCalc(); syncDocButtons(); renderTripNamePreview();
     };
     el.appendChild(d);
   });
@@ -884,15 +891,18 @@ function fmtTripRangeLocal(s, e){
   var sameMonth = s.slice(0,7) === e.slice(0,7);
   return sameMonth ? s + '~' + e.slice(8,10) : s + ' ~ ' + e;
 }
-/** 백엔드 disambiguateTripName_와 동일한 로직으로 미리보기용 출장명을 계산한다. */
+/** 백엔드 saveTrip의 이름 생성 로직과 동일하게 미리보기용 출장명을 계산한다. */
 function calcTripNamePreview(){
   var s = $('tStart').value, e = $('tEnd').value;
   if(!s) return '';
-  var base = fmtTripRangeLocal(s, e);
+  // 사무실은 월 단위 이름(yyyy-MM), 출장·외근은 날짜(구간) 뒤에 프로젝트/발주처를 항상 붙인다.
+  var range = tKind === '사무실' ? s.slice(0, 7) : fmtTripRangeLocal(s, e);
+  var base = (tKind !== '사무실' && tProjects.length) ? range + ' (' + tProjects[0] + ')' : range;
+  var remaining = (tKind !== '사무실' && tProjects.length) ? tProjects.slice(1) : tProjects;
   var others = BOOT.trips.filter(function(t){ return t.id !== tEditId; }).map(function(t){ return t.name; });
   if(others.indexOf(base) < 0) return base;
-  for(var i = 0; i < tProjects.length; i++){
-    var cand = base + ' (' + tProjects[i] + ')';
+  for(var i = 0; i < remaining.length; i++){
+    var cand = base + ' (' + remaining[i] + ')';
     if(others.indexOf(cand) < 0) return cand;
   }
   var n = 2;
@@ -1022,15 +1032,17 @@ function loadTripForm(id){
   var t = BOOT.trips.filter(function(x){ return x.id === tEditId; })[0];
   if(!t){
     tKind = '출장'; tMembers = []; tDeduct = {}; tProjects = [];
-    ['tStart','tEnd','tMemo'].forEach(function(k){ $(k).value = ''; });
+    ['tStart','tEnd','tMemo','tMonth'].forEach(function(k){ $(k).value = ''; });
     $('tDays').value = 0; $('tNights').value = 0;
   } else {
     tKind = t.kind; tMembers = arr(t.members).slice();
     tDeduct = Object.assign({}, t.deduct || {});
     tProjects = arr(t.projects).slice();
     $('tStart').value = t.start; $('tEnd').value = t.end;
+    $('tMonth').value = t.kind === '사무실' ? String(t.start || '').slice(0, 7) : '';
     $('tDays').value = t.days; $('tNights').value = t.nights; $('tMemo').value = t.memo;
   }
+  syncTripDateMode();
   renderKindChips(); renderMemberChips(); renderTripProjectChips(); renderTripNamePreview(); renderLimitCalc(); renderTripSelect(); syncDocButtons();
   $('docResult').innerHTML = '';
 }
@@ -1241,6 +1253,19 @@ function init(){
   };
   $('tStart').onchange = autoDays;
   $('tEnd').onchange = autoDays;
+  $('tMonth').onchange = function(){
+    var v = this.value;   // "yyyy-mm"
+    if(!v) return;
+    var parts = v.split('-');
+    var y = Number(parts[0]), mo = Number(parts[1]);
+    var last = new Date(y, mo, 0).getDate();   // 그 달의 마지막 날
+    $('tStart').value = v + '-01';
+    $('tEnd').value = v + '-' + (last < 10 ? '0' + last : last);
+    $('tDays').value = last;
+    $('tNights').value = 0;
+    renderTripNamePreview();
+    renderLimitCalc();
+  };
   $('tDays').oninput = renderLimitCalc;
   $('tNights').oninput = renderLimitCalc;
   $('tripSaveBtn').onclick = saveTrip;
