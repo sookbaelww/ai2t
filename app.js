@@ -823,6 +823,32 @@ function refresh(){
     .catch(function(e){ toast('불러오기 실패: ' + e.message, 'err'); });
 }
 
+/** 다른 사람이 추가한 출장·프로젝트·지출 등을 서버에서 다시 받아온다. */
+function refreshAll(){
+  var btn = $('refreshBtn');
+  if(btn.disabled) return;
+  if(!online()){ toast('오프라인에서는 새로고침할 수 없습니다', 'err'); return; }
+  btn.disabled = true;
+  var prevHtml = btn.innerHTML;
+  btn.innerHTML = '<span class="spin"></span>';
+  api('bootstrap').then(function(b){
+    b.people = arr(b.people); b.projects = arr(b.projects);
+    b.categories = arr(b.categories); b.payments = arr(b.payments);
+    b.trips = arr(b.trips);
+    BOOT = b;
+    renderCatChips(); renderProjectChips(); renderFilterChips();
+    renderTripProjectChips(); renderTripSelect(); renderNoTripWarn();
+    return refresh();
+  }).then(function(){
+    toast('새로고침 완료', 'ok');
+  }).catch(function(e){
+    toast('새로고침 실패: ' + e.message, 'err');
+  }).then(function(){
+    btn.disabled = false;
+    btn.innerHTML = prevHtml;
+  });
+}
+
 /* ---------------------------------------------------------------
  * 출장
  * --------------------------------------------------------------- */
@@ -1246,6 +1272,7 @@ function init(){
   };
   $('search').oninput = renderList;
   $('queueBtn').onclick = showQueue;
+  $('refreshBtn').onclick = refreshAll;
 
   $('tripSelect').onchange = function(){
     loadTripForm(this.value);
