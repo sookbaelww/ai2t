@@ -1288,17 +1288,11 @@ function init(){
     if(!document.hidden && PW) flushQueue(true);
   });
 
-  // 저장된 이름·암호가 있으면 바로 들어간다
+  // 저장된 이름·암호가 있으면 입력칸에 채워두기만 한다 — 로그인은 "시작하기"를 눌러야 진행된다
   var savedName = '', saved = '';
   try{ savedName = localStorage.getItem(NAME_KEY) || ''; saved = localStorage.getItem(PW_KEY) || ''; }catch(e){}
-  if(savedName && saved){
-    $('nameInput').value = savedName;
-    $('pwInput').value = saved;
-    doLogin(savedName, saved).catch(function(e){
-      if(e && e.authFailed){ try{ localStorage.removeItem(PW_KEY); localStorage.removeItem(NAME_KEY); }catch(x){} }
-      $('pwInput').value = '';
-    });
-  }
+  if(savedName) $('nameInput').value = savedName;
+  if(saved) $('pwInput').value = saved;
 
   if('serviceWorker' in navigator){
     window.addEventListener('load', function(){
