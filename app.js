@@ -11,7 +11,7 @@
  * --------------------------------------------------------------- */
 var BOOT = { people:[], projects:[], categories:[], limitCats:{}, payments:[], payType:{},
              settings:{}, grades:['이사','차장','일반'], trips:[],
-             sheetUrl:'#', driveUrl:'#', ocrAvailable:false };
+             driveUrl:'#', ocrAvailable:false };
 var DASH = null;
 var PW = '';
 var NAME = '';
@@ -765,7 +765,6 @@ function applyDashboard(d){
   d.projects   = arr(d.projects);
   d.recent     = arr(d.recent);
   DASH = d;
-  if(d.sheetUrl) $('sheetLink').href = d.sheetUrl;
   if(d.driveUrl) $('driveLink').href = d.driveUrl;
   renderNoTripWarn();
 
@@ -1206,7 +1205,6 @@ function doLogin(name, pw){
 }
 
 function start(){
-  $('sheetLink').href = BOOT.sheetUrl || '#';
   $('driveLink').href = BOOT.driveUrl || '#';
   $('payment').innerHTML = BOOT.payments.map(function(p){
     return '<option>' + esc(p) + '</option>';
