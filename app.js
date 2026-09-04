@@ -25,7 +25,7 @@ var photoArchive = null;     // 저장용(작게)
 var photoOcr = null;         // 인식용(크고 선명하게)
 var busy = false;
 var listFilter = '';
-var tKind = '출장', tMembers = [], tDeduct = {}, tProjects = [], tEditId = '';
+var tKind = '출장', tMembers = [], tDeduct = {}, tProjects = [], tHalfDay = '전일', tEditId = '';
 
 var $ = function(id){ return document.getElementById(id); };
 var won = function(n){ return '₩' + (Number(n)||0).toLocaleString('ko-KR'); };
@@ -779,7 +779,7 @@ function applyDashboard(d){
     $('gauge').innerHTML =
       '<div class="gauge">'
       + '<div class="gauge-top"><span class="gauge-lbl">한도 '+won(d.limitTotal)+' 대비 '
-      +   '<span style="color:var(--faint)">(숙박+식비+일비)</span></span>'
+      +   '<span style="color:var(--faint)">('+(d.trip && d.trip.kind==='외근' ? '식비+일비' : '숙박+식비+일비')+')</span></span>'
       +   '<span class="gauge-pct" style="color:'+col+'">'+(d.limitRate*100).toFixed(1)+'%</span></div>'
       + '<div class="gauge-bar"><span style="width:'+Math.min(100,d.limitRate*100)+'%;background:'+col+'"></span></div>'
       + '<div class="gauge-foot">'
@@ -790,11 +790,11 @@ function applyDashboard(d){
       + '</div>'
       + '<div class="hint">기타 비용 '+won(d.otherUsed)+' 은(는) 한도에 포함되지 않습니다.</div>'
       + '</div>';
-  } else if(d.trip && d.trip.kind !== '출장'){
-    $('gauge').innerHTML = '<div class="nobudget"><b>'+esc(d.trip.kind)+'</b> · 한도 없이 기록만 합니다</div>';
+  } else if(d.trip && d.trip.kind === '사무실'){
+    $('gauge').innerHTML = '<div class="nobudget"><b>사무실</b> · 한도 없이 기록만 합니다</div>';
   } else if(d.trip){
     $('gauge').innerHTML = '<div class="nobudget">한도가 0입니다<br>'
-      + '<span style="color:var(--accent)">출장 탭</span>에서 일수·박수·참석자를 입력하세요</div>';
+      + '<span style="color:var(--accent)">출장 탭</span>에서 참석자를 입력하세요</div>';
   } else {
     $('gauge').innerHTML = '<div class="nobudget">출장을 선택하면 한도가 표시됩니다</div>';
   }
@@ -853,9 +853,9 @@ function refreshAll(){
  * --------------------------------------------------------------- */
 /** 사무실이면 시작일/종료일 대신 "해당 월" 칸을 보여준다. */
 function syncTripDateMode(){
-  var isOffice = tKind === '사무실';
-  $('tDateRange').hidden = isOffice;
-  $('tMonthField').hidden = !isOffice;
+  $('tDateRange').hidden = (tKind !== '출장');
+  $('tMonthField').hidden = (tKind !== '사무실');
+  $('tOutingField').hidden = (tKind !== '외근');
 }
 function renderKindChips(){
   var el = $('kindChips');
@@ -863,12 +863,27 @@ function renderKindChips(){
   ['출장','외근','사무실'].forEach(function(k){
     var d = document.createElement('div');
     d.className = 'chip' + (tKind === k ? ' on' : '');
-    d.textContent = k + (k==='출장' ? ' (숙박)' : ' (한도 없음)');
+    d.textContent = k + (k==='출장' ? ' (숙박)' : k==='외근' ? ' (반일/전일)' : ' (한도 없음)');
     d.onclick = function(){
       tKind = k;
       if(tKind !== '출장') $('tNights').value = 0;
       syncTripDateMode();
-      renderKindChips(); renderMemberChips(); renderLimitCalc(); syncDocButtons(); renderTripNamePreview();
+      renderKindChips(); renderMemberChips(); renderHalfDayChips(); renderLimitCalc(); syncDocButtons(); renderTripNamePreview();
+    };
+    el.appendChild(d);
+  });
+}
+function renderHalfDayChips(){
+  var el = $('tHalfDayChips');
+  if(!el) return;
+  el.innerHTML = '';
+  ['오전','오후','전일'].forEach(function(v){
+    var d = document.createElement('div');
+    d.className = 'chip sm' + (tHalfDay === v ? ' on' : '');
+    d.textContent = v;
+    d.onclick = function(){
+      tHalfDay = v;
+      renderHalfDayChips(); renderLimitCalc();
     };
     el.appendChild(d);
   });
@@ -1017,6 +1032,17 @@ function calcLimitsLocal(){
   var s = BOOT.settings;
   var days = Math.max(0, Number($('tDays').value) || 0);
   var nights = Math.max(0, Number($('tNights').value) || 0);
+  if(tKind === '외근'){
+    var n = tMembers.length;
+    var full = tHalfDay === '전일';
+    var mealRate2 = Number(s['외근_식비_1끼']) || 0;
+    var dailyRate2 = Number(s['외근_일비']) || 0;
+    var meal2 = mealRate2 * (full ? 2 : 1) * n;
+    var daily2 = dailyRate2 * (full ? 1 : 0.5) * n;
+    return { lodging:0, meal:meal2, daily:daily2, total:meal2+daily2, perNight:0,
+             days:1, nights:0, hasDeduct:false, deductRows:[], isOuting:true, full:full, n:n,
+             mealRate:mealRate2, dailyRate:dailyRate2 };
+  }
   if(tKind !== '출장') return { lodging:0, meal:0, daily:0, total:0, perNight:0, days:days, nights:0, hasDeduct:false, deductRows:[] };
   var rate = { '이사': s['숙박_이사'], '차장': s['숙박_차장'], '일반': s['숙박_일반'] };
   var mealRate = Number(s['식비_1일']) || 0;
@@ -1046,13 +1072,21 @@ function calcLimitsLocal(){
 }
 function renderLimitCalc(){
   var c = calcLimitsLocal();
-  if(tKind !== '출장'){
+  if(tKind === '사무실'){
     $('limitCalc').innerHTML =
-      '<div class="calc-row"><span><b>'+esc(tKind)+'</b>은(는) 한도를 비교하지 않고 <b>기록만</b> 합니다.</span></div>'
-      + (tKind === '외근'
-          ? '<div class="calc-row f">참고 규정 · 식비 1끼 '+won(BOOT.settings['외근_식비_1끼'])
-            + ' / 일비 '+won(BOOT.settings['외근_일비'])+'</div>'
-          : '');
+      '<div class="calc-row"><span><b>사무실</b>은(는) 한도를 비교하지 않고 <b>기록만</b> 합니다.</span></div>';
+    return;
+  }
+  if(tKind === '외근'){
+    var mealLabel = c.full ? '2끼' : '1끼';
+    var dailyLabel = c.full ? '' : ' × 0.5(반일)';
+    $('limitCalc').innerHTML =
+        '<div class="calc-row"><span>식비 <span class="f">'+won(c.mealRate)+' × '+mealLabel+' × '+c.n+'명</span></span>'
+      +   '<span>'+won(c.meal)+'</span></div>'
+      + '<div class="calc-row"><span>일비 <span class="f">'+won(c.dailyRate)+dailyLabel+' × '+c.n+'명</span></span>'
+      +   '<span>'+won(c.daily)+'</span></div>'
+      + '<div class="calc-total"><span>총한도</span><span>'+won(c.total)+'</span></div>'
+      + (c.n ? '' : '<div class="calc-row f" style="color:var(--warn)">참석자를 선택하세요</div>');
     return;
   }
   var n = tMembers.length;
@@ -1084,19 +1118,22 @@ function loadTripForm(id){
   tEditId = id || '';
   var t = BOOT.trips.filter(function(x){ return x.id === tEditId; })[0];
   if(!t){
-    tKind = '출장'; tMembers = []; tDeduct = {}; tProjects = [];
-    ['tStart','tEnd','tMemo','tMonth'].forEach(function(k){ $(k).value = ''; });
+    tKind = '출장'; tMembers = []; tDeduct = {}; tProjects = []; tHalfDay = '전일';
+    ['tStart','tEnd','tMemo','tMonth','tOutDate'].forEach(function(k){ $(k).value = ''; });
     $('tDays').value = 0; $('tNights').value = 0;
   } else {
     tKind = t.kind; tMembers = arr(t.members).slice();
     tDeduct = Object.assign({}, t.deduct || {});
     tProjects = arr(t.projects).slice();
+    tHalfDay = t.halfDay || '전일';
     $('tStart').value = t.start; $('tEnd').value = t.end;
     $('tMonth').value = t.kind === '사무실' ? String(t.start || '').slice(0, 7) : '';
+    $('tOutDate').value = t.kind === '외근' ? t.start : '';
     $('tDays').value = t.days; $('tNights').value = t.nights; $('tMemo').value = t.memo;
   }
   syncTripDateMode();
-  renderKindChips(); renderMemberChips(); renderTripProjectChips(); renderTripNamePreview(); renderLimitCalc(); renderTripSelect(); syncDocButtons();
+  renderKindChips(); renderMemberChips(); renderTripProjectChips(); renderHalfDayChips();
+  renderTripNamePreview(); renderLimitCalc(); renderTripSelect(); syncDocButtons();
   $('docResult').innerHTML = '';
 }
 function autoDays(){
@@ -1123,7 +1160,7 @@ function saveTrip(){
     id: tEditId, kind: tKind, projects: tProjects,
     start: $('tStart').value, end: $('tEnd').value,
     days: Number($('tDays').value)||0, nights: Number($('tNights').value)||0,
-    members: tMembers, deduct: tDeduct, memo: $('tMemo').value.trim()
+    members: tMembers, deduct: tDeduct, halfDay: tHalfDay, memo: $('tMemo').value.trim()
   }).then(function(res){
     toast('출장 저장 완료', 'ok');
     return api('bootstrap').then(function(b){
@@ -1151,7 +1188,7 @@ function saveTrip(){
 
 /* ---- 제출 서류 ---- */
 function syncDocButtons(){
-  $('planBtn').hidden = (tKind !== '출장');
+  $('planBtn').hidden = (tKind === '사무실');
   $('planBtn').disabled = !tEditId;
   $('reportBtn').disabled = !tEditId;
 }
@@ -1315,6 +1352,16 @@ function init(){
     $('tStart').value = v + '-01';
     $('tEnd').value = v + '-' + (last < 10 ? '0' + last : last);
     $('tDays').value = last;
+    $('tNights').value = 0;
+    renderTripNamePreview();
+    renderLimitCalc();
+  };
+  $('tOutDate').onchange = function(){
+    var v = this.value;   // "yyyy-mm-dd"
+    if(!v) return;
+    $('tStart').value = v;
+    $('tEnd').value = v;
+    $('tDays').value = 1;
     $('tNights').value = 0;
     renderTripNamePreview();
     renderLimitCalc();
