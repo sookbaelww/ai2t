@@ -11,7 +11,7 @@
  * --------------------------------------------------------------- */
 var BOOT = { people:[], projects:[], categories:[], limitCats:{}, payments:[], payType:{},
              settings:{}, grades:['이사','차장','일반'], trips:[],
-             driveUrl:'#', ocrAvailable:false };
+             driveUrl:'#', isAdmin:false, ocrAvailable:false };
 var DASH = null;
 var PW = '';
 var NAME = '';
@@ -880,12 +880,25 @@ function renderTripProjectChips(){
     var on = tProjects.indexOf(name) >= 0;
     var d = document.createElement('div');
     d.className = 'chip sm' + (on ? ' on' : '');
-    d.textContent = name;
-    d.onclick = function(){
+    d.appendChild(document.createTextNode(name));
+    d.onclick = function(e){
+      if(e.target.closest('.chip-del')) return;
       var i = tProjects.indexOf(name);
       if(i >= 0) tProjects.splice(i,1); else tProjects.push(name);
       renderTripProjectChips(); renderTripNamePreview();
     };
+    if(BOOT.isAdmin){
+      var del = document.createElement('span');
+      del.className = 'chip-del';
+      del.textContent = '×';
+      del.title = '삭제 (관리자)';
+      del.onclick = function(e){
+        e.stopPropagation();
+        if(!confirm('"' + name + '" 프로젝트/발주처를 삭제할까요?\n이미 출장이나 지출내역에서 쓰였으면 삭제되지 않습니다.')) return;
+        deleteProjectAdmin(name);
+      };
+      d.appendChild(del);
+    }
     el.appendChild(d);
   });
   var add = document.createElement('div');
@@ -908,6 +921,21 @@ function renderTripProjectChips(){
   };
   add.appendChild(inp);
   el.appendChild(add);
+}
+/** 관리자 전용: 프로젝트/발주처를 서버에서 지우고 화면 목록에서도 뺀다. */
+function deleteProjectAdmin(name){
+  api('deleteProject', { name: name }).then(function(){
+    toast('삭제했습니다', 'ok');
+    var i = BOOT.projects.indexOf(name);
+    if(i >= 0) BOOT.projects.splice(i, 1);
+    var j = tProjects.indexOf(name);
+    if(j >= 0) tProjects.splice(j, 1);
+    renderTripProjectChips();
+    renderProjectChips();
+    renderTripNamePreview();
+  }).catch(function(e){
+    toast(e.message, 'err');
+  });
 }
 /** 시작일·종료일(yyyy-mm-dd 문자열) → "yyyy-mm-dd~dd"(같은 달) 또는 "yyyy-mm-dd ~ yyyy-mm-dd" */
 function fmtTripRangeLocal(s, e){

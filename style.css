@@ -90,6 +90,8 @@ select{appearance:none;background-image:url("data:image/svg+xml;charset=utf-8,%3
 .chip-inline-input{background:transparent;border:none;color:var(--text);font-size:13px;
   width:82px;padding:0;outline:none;font-family:inherit}
 .chip-inline-input::placeholder{color:var(--faint)}
+.chip-del{margin-left:7px;color:var(--faint);font-weight:700;cursor:pointer;padding:0 2px}
+.chip-del:hover{color:var(--bad)}
 .chip-deduct{display:flex;align-items:center;gap:5px;margin-top:5px;font-size:11px;
   color:var(--faint);cursor:default}
 .chip-deduct input{width:34px;padding:3px 4px;border-radius:6px;border:1px solid var(--border);
